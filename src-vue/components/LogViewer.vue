@@ -1,153 +1,63 @@
 <template>
   <div class="log-viewer">
     <!-- Toolbar -->
-    <div class="toolbar">
-      <div class="toolbar-left">
-        <div class="toolbar-title">🚀 LogMan - Developer Console</div>
-        <div class="project-info">
-          <span v-if="!hasProject" class="project-status">No project selected</span>
-          <template v-else>
-            <span class="project-status connected">📁 {{ projectName }}</span>
-            <span class="project-path" :title="projectDirectory">{{ projectDirectory }}</span>
-          </template>
-        </div>
-        <div v-if="hasProject" class="toolbar-stats">
-          <span>Requests: <span id="totalRequests">{{ logData.totalRequests }}</span></span>
-          <span>Entries: <span id="totalEntries">{{ totalEntries }}</span></span>
-        </div>
-      </div>
-      <div class="toolbar-right">
-        <button class="toolbar-btn" @click="selectProject">
-          {{ hasProject ? '📁 Change Project' : '📁 Select Project' }}
-        </button>
-        <button v-if="hasProject" class="toolbar-btn" @click="refreshLogs" :disabled="isRefreshing">
-          <span :class="{ 'spinning': isRefreshing }">⟲</span> Refresh
-        </button>
-        <button v-if="hasProject" class="toolbar-btn" @click="clearDisplay">🗑 Clear</button>
-        <button v-if="hasProject" :class="['toolbar-btn', { 'active': autoScroll }]" @click="toggleAutoScroll">
-          {{ autoScroll ? '📜 Auto Scroll' : '⏸️ Manual' }}
-        </button>
-        <div v-if="hasProject && isWatching" class="status-indicator">
-          <div class="status-dot"></div>
-          <span>Live</span>
-        </div>
-      </div>
-    </div>
+    <Toolbar
+      :hasProject="hasProject"
+      :projectDirectory="projectDirectory"
+      :isWatching="isWatching"
+      :totalRequests="logData.totalRequests"
+      :totalEntries="totalEntries"
+      :autoScroll="autoScroll"
+      :isRefreshing="isRefreshing"
+      @select-project="selectProject"
+      @refresh="refreshLogs"
+      @clear="clearDisplay"
+      @toggle-auto-scroll="toggleAutoScroll"
+    />
 
     <!-- Main Container -->
     <div class="main-container">
       <!-- Welcome Screen -->
-      <div v-if="!hasProject" class="welcome-screen">
-        <div class="welcome-content">
-          <div class="welcome-icon">🚀</div>
-          <h2>Welcome to LogMan</h2>
-          <p>Select a Rails project directory to start monitoring logs</p>
-          <div class="welcome-features">
-            <div class="feature-item">
-              <span class="feature-icon">📁</span>
-              <span>Automatically detects Rails projects by checking for Gemfile</span>
-            </div>
-            <div class="feature-item">
-              <span class="feature-icon">📊</span>
-              <span>Real-time log monitoring with request grouping</span>
-            </div>
-            <div class="feature-item">
-              <span class="feature-icon">🔍</span>
-              <span>Smart HTTP method and path extraction</span>
-            </div>
-            <div class="feature-item">
-              <span class="feature-icon">⚡</span>
-              <span>Developer console-style interface</span>
-            </div>
-          </div>
-          <button class="welcome-btn" @click="selectProject">
-            📁 Select Rails Project Directory
-          </button>
-        </div>
-      </div>
+      <WelcomeScreen
+        v-if="!hasProject"
+        @select-project="selectProject"
+      />
 
       <!-- Console Interface -->
       <div v-else class="console-interface">
-        <div class="requests-panel">
-          <div class="panel-header">
-            Requests ({{ filteredRequests.length }})
-          </div>
+        <RequestList
+          :requests="logData.requests"
+          :totalRequests="logData.totalRequests"
+          :selectedRequestId="selectedRequestId"
+          @select-request="selectRequest"
+        />
 
-          <div class="filter-section">
-            <input
-              type="text"
-              class="filter-input"
-              placeholder="Search requests... (supports fuzzy search)"
-              v-model="searchTerm"
-              @input="updateSearch"
-            >
-          </div>
-
-          <div class="requests-list">
-            <div v-if="logData.totalRequests === 0" class="empty-state">
-              <div class="empty-icon">📄</div>
-              <div>No requests detected yet</div>
-            </div>
-
-            <div
-              v-for="request in filteredRequests"
-              :key="request.requestId"
-              :class="['request-item', { 'selected': selectedRequestId === request.requestId }]"
-              @click="selectRequest(request.requestId)"
-            >
-              <div :class="['request-status', getRequestStatus(request)]"></div>
-              <div class="request-details">
-                <div class="request-title">
-                  <span :class="['request-method', `method-${request.method}`]">{{ request.method }}</span>
-                  <span class="request-path">{{ request.path }}</span>
-                </div>
-                <div class="request-id">{{ request.requestId }}</div>
-                <div class="request-meta">
-                  <span class="entry-count">{{ request.entriesCount }} entries</span>
-                  <span>{{ formatTime(request.lastSeen) }}</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="details-panel">
-          <div class="details-header">
-            <div class="details-title">{{ selectedRequest ? (selectedRequest.title || `${selectedRequest.method} ${selectedRequest.path}`) : 'Request Details' }}</div>
-            <div class="details-id">{{ selectedRequestId || 'Select a request' }}</div>
-          </div>
-
-          <div class="details-content" ref="detailsContent">
-            <div v-if="!selectedRequestId" class="empty-state">
-              <div class="empty-icon">📋</div>
-              <div>Select a request from the left panel to view its logs</div>
-            </div>
-
-            <div v-else-if="selectedRequest">
-              <div
-                v-for="(entry, index) in selectedRequest.entries"
-                :key="index"
-                class="log-entry"
-              >
-                <div class="log-content">{{ entry.content }}</div>
-                <div class="log-timestamp">{{ formatDateTime(entry.timestamp) }}</div>
-              </div>
-            </div>
-          </div>
-        </div>
+        <RequestDetails
+          :selectedRequestId="selectedRequestId"
+          :selectedRequest="selectedRequest"
+          :autoScroll="autoScroll"
+        />
       </div>
     </div>
   </div>
 </template>
 
 <script>
-import MiniSearch from 'minisearch'
+import WelcomeScreen from './WelcomeScreen.vue'
+import Toolbar from './Toolbar.vue'
+import RequestList from './RequestList.vue'
+import RequestDetails from './RequestDetails.vue'
 
 export default {
   name: 'LogViewer',
+  components: {
+    WelcomeScreen,
+    Toolbar,
+    RequestList,
+    RequestDetails
+  },
   data() {
     return {
-      searchTerm: '',
       selectedRequestId: null,
       logData: {
         totalRequests: 0,
@@ -156,49 +66,17 @@ export default {
       projectDirectory: '',
       hasProject: false,
       isWatching: false,
-      miniSearch: null,
-      searchResults: [],
       autoScroll: true,
       isRefreshing: false
     }
   },
   computed: {
-    projectName() {
-      if (!this.projectDirectory) return '';
-      return this.projectDirectory.split('/').pop() || 'Unknown Project';
-    },
     totalEntries() {
       return this.logData.requests.reduce((sum, req) => sum + req.entriesCount, 0);
-    },
-    filteredRequests() {
-      if (!this.searchTerm.trim()) {
-        // If no search term, return all requests sorted by last seen
-        return [...this.logData.requests].sort((a, b) => new Date(b.lastSeen) - new Date(a.lastSeen));
-      }
-
-      if (!this.miniSearch || this.searchResults.length === 0) {
-        // Fallback to simple search if MiniSearch isn't ready
-        const searchLower = this.searchTerm.toLowerCase();
-        return this.logData.requests.filter(request => {
-          return request.requestId.toLowerCase().includes(searchLower) ||
-                 request.method.toLowerCase().includes(searchLower) ||
-                 request.path.toLowerCase().includes(searchLower) ||
-                 request.title.toLowerCase().includes(searchLower);
-        }).sort((a, b) => new Date(b.lastSeen) - new Date(a.lastSeen));
-      }
-
-      // Return MiniSearch results with relevance scoring
-      return this.searchResults.map(result => {
-        const request = this.logData.requests.find(req => req.requestId === result.id);
-        return { ...request, searchScore: result.score };
-      }).filter(Boolean);
     },
     selectedRequest() {
       if (!this.selectedRequestId) return null;
       const request = this.logData.requests.find(req => req.requestId === this.selectedRequestId);
-      console.log('selectedRequest - requestId:', this.selectedRequestId);
-      console.log('selectedRequest - found request:', request);
-      console.log('selectedRequest - title:', request?.title);
       if (!request) return null;
 
       // Return a copy of the request with entries sorted in ascending order (oldest first)
@@ -208,120 +86,15 @@ export default {
       };
     }
   },
-  watch: {
-    'logData.requests': {
-      handler: 'rebuildSearchIndex',
-      deep: true
-    },
-    selectedRequest: {
-      handler() {
-        if (this.autoScroll) {
-          this.$nextTick(() => {
-            this.scrollToBottom();
-          });
-        }
-      }
-    }
-  },
   async mounted() {
     if (window.electronAPI) {
       await this.loadProjectInfo();
       this.setupLogListener();
-      this.initializeSearch();
     } else {
       console.warn('Not running in Electron environment');
     }
   },
   methods: {
-    initializeSearch() {
-      // Initialize MiniSearch with configuration optimized for log data
-      this.miniSearch = new MiniSearch({
-        fields: ['requestId', 'method', 'path', 'title'], // fields to index for full-text search
-        storeFields: ['requestId', 'method', 'path', 'title', 'lastSeen'], // fields to return with search results
-        searchOptions: {
-          boost: {
-            method: 3,     // Boost method matches heavily
-            path: 2,       // Boost path matches moderately
-            title: 2,      // Boost title matches moderately
-            requestId: 1   // Normal boost for request ID
-          },
-          fuzzy: 0.2,      // Enable fuzzy search with max edit distance of 20% of term length
-          prefix: true,    // Enable prefix search (so 'get' matches 'get', 'GET', etc.)
-          combineWith: 'AND' // Require all terms to match (can be changed to 'OR' for broader results)
-        },
-        // Custom tokenizer to handle HTTP methods and paths better
-        tokenize: (string) => {
-          // Split on common delimiters and normalize
-          return string.toLowerCase()
-            .split(/[\s\-_\.\/\#\?&=]+/)
-            .filter(token => token.length > 0);
-        },
-        // Custom term processing
-        processTerm: (term) => {
-          // Remove very short terms and normalize
-          if (term.length < 2) return null;
-          return term.toLowerCase();
-        }
-      });
-
-      this.rebuildSearchIndex();
-    },
-    rebuildSearchIndex() {
-      if (!this.miniSearch || !this.logData.requests.length) return;
-
-      try {
-        // Clear existing index
-        this.miniSearch.removeAll();
-
-        // Add all requests to the search index
-        const searchDocuments = this.logData.requests.map(request => ({
-          id: request.requestId,
-          requestId: request.requestId,
-          method: request.method,
-          path: request.path,
-          title: request.title,
-          lastSeen: request.lastSeen
-        }));
-
-        this.miniSearch.addAll(searchDocuments);
-
-        // Re-run search if there's an active search term
-        if (this.searchTerm.trim()) {
-          this.performSearch();
-        }
-      } catch (error) {
-        console.error('Error rebuilding search index:', error);
-      }
-    },
-    updateSearch() {
-      // Debounce search to avoid excessive re-indexing
-      clearTimeout(this.searchTimeout);
-      this.searchTimeout = setTimeout(() => {
-        this.performSearch();
-      }, 150);
-    },
-    performSearch() {
-      if (!this.miniSearch || !this.searchTerm.trim()) {
-        this.searchResults = [];
-        return;
-      }
-
-      try {
-        this.searchResults = this.miniSearch.search(this.searchTerm.trim(), {
-          // Override default options for specific searches if needed
-          fuzzy: this.searchTerm.length > 3 ? 0.2 : false, // Only use fuzzy for longer terms
-          boost: {
-            method: 3,
-            path: 2,
-            title: 2,
-            requestId: 1
-          }
-        });
-      } catch (error) {
-        console.error('Search error:', error);
-        this.searchResults = [];
-      }
-    },
     async loadProjectInfo() {
       try {
         const projectInfo = await window.electronAPI.getProjectInfo();
@@ -372,16 +145,6 @@ export default {
     selectRequest(requestId) {
       this.selectedRequestId = requestId;
     },
-    getRequestStatus(request) {
-      const timeDiff = new Date() - new Date(request.lastSeen);
-      return timeDiff < 30000 ? 'active' : 'completed';
-    },
-    formatTime(timestamp) {
-      return new Date(timestamp).toLocaleTimeString();
-    },
-    formatDateTime(timestamp) {
-      return new Date(timestamp).toLocaleString();
-    },
     async clearDisplay() {
       if (confirm('Clear all request logs? This will remove all captured log data.')) {
         try {
@@ -396,11 +159,6 @@ export default {
 
             // Reset UI state immediately
             this.selectedRequestId = null;
-            this.searchTerm = '';
-            this.searchResults = [];
-
-            // Rebuild search index with empty data
-            this.rebuildSearchIndex();
           } else {
             console.error('Failed to clear logs:', result.message);
             alert('Failed to clear logs: ' + result.message);
@@ -413,14 +171,6 @@ export default {
     },
     toggleAutoScroll() {
       this.autoScroll = !this.autoScroll;
-      if (this.autoScroll) {
-        this.scrollToBottom();
-      }
-    },
-    scrollToBottom() {
-      if (this.$refs.detailsContent) {
-        this.$refs.detailsContent.scrollTop = this.$refs.detailsContent.scrollHeight;
-      }
     }
   }
 }
@@ -435,506 +185,14 @@ export default {
   overflow: hidden;
 }
 
-.toolbar {
-  background: #2d2d30;
-  border-bottom: 1px solid #3e3e42;
-  padding: 8px 16px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  height: 40px;
-  font-size: 13px;
-}
-
-.toolbar-left {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-
-.toolbar-title {
-  font-weight: 600;
-  color: #cccccc;
-}
-
-.project-info {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.project-status {
-  color: #6a9955;
-  font-size: 12px;
-  padding: 2px 6px;
-  background: #2d2d30;
-  border: 1px solid #3e3e42;
-  border-radius: 3px;
-}
-
-.project-status.connected {
-  color: #4ade80;
-  border-color: #4ade80;
-}
-
-.project-path {
-  color: #9cdcfe;
-  font-size: 11px;
-  max-width: 200px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.toolbar-stats {
-  display: flex;
-  gap: 16px;
-  color: #9cdcfe;
-  font-size: 12px;
-}
-
-.toolbar-right {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
-.toolbar-btn {
-  background: #3c3c3c;
-  border: 1px solid #464647;
-  color: #cccccc;
-  padding: 4px 8px;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 11px;
-  transition: all 0.2s;
-}
-
-.toolbar-btn:hover {
-  background: #404040;
-  border-color: #5a5a5a;
-}
-
-.toolbar-btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.toolbar-btn.active {
-  background: #0e639c;
-  border-color: #007acc;
-  color: white;
-}
-
-.spinning {
-  animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
-}
-
-.status-indicator {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: #4ade80;
-  font-size: 11px;
-}
-
-.status-dot {
-  width: 6px;
-  height: 6px;
-  background: #4ade80;
-  border-radius: 50%;
-  animation: pulse 2s infinite;
-}
-
-@keyframes pulse {
-  0% { opacity: 1; }
-  50% { opacity: 0.5; }
-  100% { opacity: 1; }
-}
-
 .main-container {
   display: flex;
   height: calc(100vh - 40px);
-}
-
-.welcome-screen {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: #1e1e1e;
-}
-
-.welcome-content {
-  text-align: center;
-  max-width: 500px;
-  padding: 40px;
-}
-
-.welcome-content h2 {
-  color: #cccccc;
-  font-size: 24px;
-  margin-bottom: 12px;
-  font-weight: 600;
-}
-
-.welcome-content p {
-  color: #9ca3af;
-  font-size: 14px;
-  margin-bottom: 32px;
-  line-height: 1.5;
-}
-
-.welcome-icon {
-  font-size: 64px;
-  margin-bottom: 20px;
-}
-
-.welcome-features {
-  text-align: left;
-  margin-bottom: 32px;
-}
-
-.feature-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 12px;
-  color: #d4d4d4;
-  font-size: 13px;
-}
-
-.feature-icon {
-  font-size: 16px;
-  width: 20px;
-  text-align: center;
-}
-
-.welcome-btn {
-  background: #0e639c;
-  border: 1px solid #007acc;
-  color: white;
-  padding: 12px 24px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 500;
-  transition: all 0.2s;
-}
-
-.welcome-btn:hover {
-  background: #094771;
-  border-color: #005a9e;
-  transform: translateY(-1px);
 }
 
 .console-interface {
   flex: 1;
   display: flex;
   height: 100%;
-}
-
-.requests-panel {
-  width: 350px;
-  background: #252526;
-  border-right: 1px solid #3e3e42;
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-}
-
-.panel-header {
-  background: #2d2d30;
-  padding: 8px 12px;
-  border-bottom: 1px solid #3e3e42;
-  font-size: 12px;
-  font-weight: 600;
-  color: #cccccc;
-  flex-shrink: 0;
-}
-
-.filter-section {
-  padding: 8px 12px;
-  border-bottom: 1px solid #3e3e42;
-  background: #2d2d30;
-  flex-shrink: 0;
-}
-
-.filter-input {
-  width: 100%;
-  background: #3c3c3c;
-  border: 1px solid #464647;
-  color: #d4d4d4;
-  padding: 4px 8px;
-  border-radius: 3px;
-  font-size: 11px;
-  font-family: inherit;
-}
-
-.filter-input:focus {
-  outline: none;
-  border-color: #007acc;
-  box-shadow: 0 0 0 1px #007acc;
-}
-
-.filter-input::placeholder {
-  color: #6a9955;
-}
-
-.requests-list {
-  flex: 1;
-  overflow-y: auto;
-  height: 0;
-}
-
-.request-item {
-  display: flex;
-  align-items: center;
-  padding: 8px 12px;
-  border-bottom: 1px solid #2d2d30;
-  cursor: pointer;
-  transition: background-color 0.2s;
-  font-size: 12px;
-}
-
-.request-item:hover {
-  background: #2a2d2e;
-}
-
-.request-item.selected {
-  background: #094771;
-  border-left: 3px solid #007acc;
-}
-
-.request-status {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  margin-right: 8px;
-  flex-shrink: 0;
-}
-
-.request-status.active {
-  background: #4ade80;
-}
-
-.request-status.completed {
-  background: #6b7280;
-}
-
-.request-details {
-  flex: 1;
-  min-width: 0;
-}
-
-.request-title {
-  color: #cccccc;
-  font-weight: 600;
-  font-size: 13px;
-  margin-bottom: 4px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.request-method {
-  display: inline-block;
-  padding: 2px 6px;
-  border-radius: 3px;
-  font-size: 10px;
-  font-weight: 600;
-  margin-right: 6px;
-  min-width: 40px;
-  text-align: center;
-}
-
-.method-GET {
-  background: #4ade80;
-  color: #000;
-}
-
-.method-POST {
-  background: #fbbf24;
-  color: #000;
-}
-
-.method-PUT {
-  background: #3b82f6;
-  color: #fff;
-}
-
-.method-DELETE {
-  background: #ef4444;
-  color: #fff;
-}
-
-.method-PATCH {
-  background: #8b5cf6;
-  color: #fff;
-}
-
-.method-RAILS {
-  background: #dc2626;
-  color: #fff;
-}
-
-.method-API {
-  background: #059669;
-  color: #fff;
-}
-
-.method-WEB {
-  background: #6b7280;
-  color: #fff;
-}
-
-.method-LOG {
-  background: #374151;
-  color: #fff;
-}
-
-.method-UNKNOWN {
-  background: #1f2937;
-  color: #9ca3af;
-}
-
-.request-path {
-  color: #9cdcfe;
-  font-size: 11px;
-  font-weight: normal;
-}
-
-.request-id {
-  color: #6a9955;
-  font-weight: 400;
-  font-size: 10px;
-  margin-bottom: 2px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  opacity: 0.7;
-}
-
-.request-meta {
-  display: flex;
-  justify-content: space-between;
-  color: #6a9955;
-  font-size: 11px;
-}
-
-.entry-count {
-  color: #ce9178;
-  font-weight: 500;
-}
-
-.details-panel {
-  flex: 1;
-  background: #1e1e1e;
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-}
-
-.details-header {
-  background: #2d2d30;
-  padding: 12px 16px;
-  border-bottom: 1px solid #3e3e42;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  flex-shrink: 0;
-}
-
-.details-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: #cccccc;
-}
-
-.details-id {
-  font-family: 'SF Mono', monospace;
-  color: #9cdcfe;
-  font-size: 11px;
-  background: #3c3c3c;
-  padding: 2px 6px;
-  border-radius: 3px;
-}
-
-.details-content {
-  flex: 1;
-  overflow-y: auto;
-  padding: 16px;
-  height: 0;
-}
-
-.log-entry {
-  margin-bottom: 12px;
-  padding: 8px 12px;
-  background: #262626;
-  border-radius: 4px;
-  border-left: 3px solid #007acc;
-  font-size: 12px;
-  line-height: 1.4;
-}
-
-.log-entry:last-child {
-  border-left-color: #4ade80;
-  background: #1a2e1a;
-}
-
-.log-content {
-  color: #d4d4d4;
-  white-space: pre-wrap;
-  word-break: break-all;
-  margin-bottom: 6px;
-}
-
-.log-timestamp {
-  color: #6a9955;
-  font-size: 10px;
-  text-align: right;
-}
-
-.empty-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: #6a9955;
-  font-size: 14px;
-}
-
-.empty-icon {
-  font-size: 48px;
-  margin-bottom: 16px;
-  opacity: 0.5;
-}
-
-/* Custom scrollbar for webkit browsers */
-.requests-list::-webkit-scrollbar,
-.details-content::-webkit-scrollbar {
-  width: 8px;
-}
-
-.requests-list::-webkit-scrollbar-track,
-.details-content::-webkit-scrollbar-track {
-  background: #1e1e1e;
-}
-
-.requests-list::-webkit-scrollbar-thumb,
-.details-content::-webkit-scrollbar-thumb {
-  background: #3c3c3c;
-  border-radius: 4px;
-}
-
-.requests-list::-webkit-scrollbar-thumb:hover,
-.details-content::-webkit-scrollbar-thumb:hover {
-  background: #4a4a4a;
 }
 </style>
