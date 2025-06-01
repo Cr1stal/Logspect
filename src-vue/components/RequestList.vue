@@ -210,232 +210,138 @@ export default {
 </script>
 
 <style scoped>
+@reference "../style.css";
+
 .requests-panel {
-  width: 350px;
-  background: #252526;
-  border-right: 1px solid #3e3e42;
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Droid Sans Mono', monospace;
-  color: #d4d4d4;
+  @apply w-80 bg-slate-800 border-r border-slate-700 flex flex-col h-full font-mono text-slate-300;
 }
 
 .panel-header {
-  background: #2d2d30;
-  padding: 8px 12px;
-  border-bottom: 1px solid #3e3e42;
-  font-size: 12px;
-  font-weight: 600;
-  color: #cccccc;
-  flex-shrink: 0;
+  @apply bg-slate-700 px-3 py-2 border-b border-slate-600 text-xs font-semibold text-slate-200 flex-shrink-0;
 }
 
 .filter-section {
-  padding: 8px 12px;
-  border-bottom: 1px solid #3e3e42;
-  background: #2d2d30;
-  flex-shrink: 0;
+  @apply px-3 py-2 border-b border-slate-600 bg-slate-700 flex-shrink-0;
 }
 
 .filter-input {
-  width: 100%;
-  background: #3c3c3c;
-  border: 1px solid #464647;
-  color: #d4d4d4;
-  padding: 4px 8px;
-  border-radius: 3px;
-  font-size: 11px;
-  font-family: inherit;
-}
-
-.filter-input:focus {
-  outline: none;
-  border-color: #007acc;
-  box-shadow: 0 0 0 1px #007acc;
-}
-
-.filter-input::placeholder {
-  color: #6a9955;
+  @apply w-full bg-slate-600 border border-slate-500 text-slate-300 px-2 py-1 rounded text-xs font-mono focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 placeholder-green-600;
 }
 
 .requests-list {
-  flex: 1;
-  overflow-y: auto;
-  height: 0;
+  @apply flex-1 overflow-y-auto h-0;
 }
 
 .request-item {
-  display: flex;
-  align-items: center;
-  padding: 8px 12px;
-  border-bottom: 1px solid #2d2d30;
-  cursor: pointer;
-  transition: background-color 0.2s;
-  font-size: 12px;
-}
-
-.request-item:hover {
-  background: #2a2d2e;
+  @apply flex items-center px-3 py-2 border-b border-slate-700 cursor-pointer transition-colors text-xs hover:bg-slate-700/60;
 }
 
 .request-item.selected {
-  background: #094771;
-  border-left: 3px solid #007acc;
+  @apply bg-sky-800 border-l-4 border-sky-500;
 }
 
 .request-status {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  margin-right: 8px;
-  flex-shrink: 0;
+  @apply w-2 h-2 rounded-full mr-2 flex-shrink-0;
 }
 
 .request-status.active {
-  background: #4ade80;
+  @apply bg-green-400;
 }
 
 .request-status.completed {
-  background: #6b7280;
+  @apply bg-slate-500;
 }
 
 .request-details {
-  flex: 1;
-  min-width: 0;
+  @apply flex-1 min-w-0;
 }
 
 .request-title {
-  color: #cccccc;
-  font-weight: 600;
-  font-size: 13px;
-  margin-bottom: 4px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  @apply text-slate-200 font-semibold text-xs mb-1 whitespace-nowrap overflow-hidden text-ellipsis;
 }
 
 .request-method {
-  display: inline-block;
-  padding: 2px 6px;
-  border-radius: 3px;
-  font-size: 10px;
-  font-weight: 600;
-  margin-right: 6px;
-  min-width: 40px;
-  text-align: center;
+  @apply inline-block px-1.5 py-0.5 rounded text-xs font-semibold mr-1.5 min-w-10 text-center;
 }
 
 .method-GET {
-  background: #4ade80;
-  color: #000;
+  @apply bg-green-400 text-black;
 }
 
 .method-POST {
-  background: #fbbf24;
-  color: #000;
+  @apply bg-yellow-400 text-black;
 }
 
 .method-PUT {
-  background: #3b82f6;
-  color: #fff;
+  @apply bg-blue-500 text-white;
 }
 
 .method-DELETE {
-  background: #ef4444;
-  color: #fff;
+  @apply bg-red-500 text-white;
 }
 
 .method-PATCH {
-  background: #8b5cf6;
-  color: #fff;
+  @apply bg-purple-500 text-white;
 }
 
 .method-RAILS {
-  background: #dc2626;
-  color: #fff;
+  @apply bg-red-600 text-white;
 }
 
 .method-API {
-  background: #059669;
-  color: #fff;
+  @apply bg-emerald-600 text-white;
 }
 
 .method-WEB {
-  background: #6b7280;
-  color: #fff;
+  @apply bg-slate-500 text-white;
 }
 
 .method-LOG {
-  background: #374151;
-  color: #fff;
+  @apply bg-slate-700 text-white;
 }
 
 .method-UNKNOWN {
-  background: #1f2937;
-  color: #9ca3af;
+  @apply bg-slate-800 text-slate-400;
 }
 
 .request-path {
-  color: #9cdcfe;
-  font-size: 11px;
-  font-weight: normal;
+  @apply text-blue-300 text-xs font-normal;
 }
 
 .request-id {
-  color: #6a9955;
-  font-weight: 400;
-  font-size: 10px;
-  margin-bottom: 2px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  opacity: 0.7;
+  @apply text-green-600 font-normal text-xs mb-0.5 whitespace-nowrap overflow-hidden text-ellipsis opacity-70;
 }
 
 .request-meta {
-  display: flex;
-  justify-content: space-between;
-  color: #6a9955;
-  font-size: 11px;
+  @apply flex justify-between text-green-600 text-xs;
 }
 
 .entry-count {
-  color: #ce9178;
-  font-weight: 500;
+  @apply text-orange-300 font-medium;
 }
 
 .empty-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: #6a9955;
-  font-size: 14px;
+  @apply flex flex-col items-center justify-center h-full text-green-600 text-sm;
 }
 
 .empty-icon {
-  font-size: 48px;
-  margin-bottom: 16px;
-  opacity: 0.5;
+  @apply text-5xl mb-4 opacity-50;
 }
 
 /* Custom scrollbar for webkit browsers */
 .requests-list::-webkit-scrollbar {
-  width: 8px;
+  @apply w-2;
 }
 
 .requests-list::-webkit-scrollbar-track {
-  background: #1e1e1e;
+  @apply bg-slate-900;
 }
 
 .requests-list::-webkit-scrollbar-thumb {
-  background: #3c3c3c;
-  border-radius: 4px;
+  @apply bg-slate-600 rounded;
 }
 
 .requests-list::-webkit-scrollbar-thumb:hover {
-  background: #4a4a4a;
+  @apply bg-slate-500;
 }
 </style>

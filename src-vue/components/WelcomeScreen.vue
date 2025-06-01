@@ -2,7 +2,7 @@
   <div class="welcome-screen">
     <div class="welcome-content">
       <div class="welcome-icon">🚀</div>
-      <h2>Welcome to LogMan</h2>
+      <h2>Welcome to Logspect</h2>
       <p>Select a Rails project directory to start monitoring logs</p>
       <div class="welcome-features">
         <div class="feature-item">
@@ -37,74 +37,40 @@ export default {
 </script>
 
 <style scoped>
+@reference "../style.css";
 .welcome-screen {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: #1e1e1e;
+  @apply flex-1 flex items-center justify-center bg-slate-900;
 }
 
 .welcome-content {
-  text-align: center;
-  max-width: 500px;
-  padding: 40px;
+  @apply text-center max-w-lg p-10;
 }
 
 .welcome-content h2 {
-  color: #cccccc;
-  font-size: 24px;
-  margin-bottom: 12px;
-  font-weight: 600;
+  @apply text-slate-200 text-2xl mb-3 font-semibold;
 }
 
 .welcome-content p {
-  color: #9ca3af;
-  font-size: 14px;
-  margin-bottom: 32px;
-  line-height: 1.5;
+  @apply text-slate-400 text-sm mb-8 leading-relaxed;
 }
 
 .welcome-icon {
-  font-size: 64px;
-  margin-bottom: 20px;
+  @apply text-6xl mb-5;
 }
 
 .welcome-features {
-  text-align: left;
-  margin-bottom: 32px;
+  @apply text-left mb-8;
 }
 
 .feature-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 12px;
-  color: #d4d4d4;
-  font-size: 13px;
+  @apply flex items-center gap-3 mb-3 text-slate-300 text-xs;
 }
 
 .feature-icon {
-  font-size: 16px;
-  width: 20px;
-  text-align: center;
+  @apply text-base w-5 text-center;
 }
 
 .welcome-btn {
-  background: #0e639c;
-  border: 1px solid #007acc;
-  color: white;
-  padding: 12px 24px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 500;
-  transition: all 0.2s;
-}
-
-.welcome-btn:hover {
-  background: #094771;
-  border-color: #005a9e;
-  transform: translateY(-1px);
+  @apply bg-sky-600 border border-sky-500 text-white px-6 py-3 rounded-md cursor-pointer text-xs font-medium transition-all duration-200 hover:bg-sky-700 hover:border-sky-600 hover:-translate-y-px;
 }
 </style>

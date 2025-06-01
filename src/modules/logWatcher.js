@@ -142,7 +142,6 @@ const processNewLogContent = (content) => {
       } else {
         console.log(`📝 Additional entry for: ${parsed.requestId}`);
       }
-      console.log(`   ${parsed.content}`);
     } else {
       console.log(`❓ Unmatched log: ${parsed.content}`);
     }

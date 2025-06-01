@@ -73,22 +73,18 @@ export default {
 </script>
 
 <style scoped>
+@reference "../style.css";
+
 .log-viewer {
-  height: 100vh;
-  background: #1e1e1e;
-  color: #d4d4d4;
-  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Droid Sans Mono', monospace;
-  overflow: hidden;
+  @apply h-screen bg-slate-900 text-slate-300 font-mono overflow-hidden;
 }
 
 .main-container {
-  display: flex;
+  @apply flex;
   height: calc(100vh - 40px);
 }
 
 .console-interface {
-  flex: 1;
-  display: flex;
-  height: 100%;
+  @apply flex-1 flex h-full;
 }
 </style>

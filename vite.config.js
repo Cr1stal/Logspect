@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import vueDevTools from 'vite-plugin-vue-devtools'
-
+import tailwindcss from '@tailwindcss/vite'
 
 // https://vitejs.dev/config/
 export default defineConfig({
@@ -14,7 +14,8 @@ export default defineConfig({
         }
       }
     }),
-    vueDevTools()
+    vueDevTools(),
+    tailwindcss()
   ],
   root: 'src-vue',
   base: './',
@@ -28,7 +29,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@': '/src'
+      '@': '/src-vue'
     }
   },
   define: {

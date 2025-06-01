@@ -1,7 +1,7 @@
 <template>
   <div class="toolbar">
     <div class="toolbar-left">
-      <div class="toolbar-title">🚀 LogMan - Developer Console</div>
+      <div class="toolbar-title">🚀 Logspect - Developer Console</div>
       <div class="project-info">
         <span v-if="!hasProject" class="project-status">No project selected</span>
         <template v-else>
@@ -77,125 +77,62 @@ export default {
 </script>
 
 <style scoped>
+@reference "../style.css";
+@config "../../tailwind.config.js";
+
 .toolbar {
-  background: #2d2d30;
-  border-bottom: 1px solid #3e3e42;
-  padding: 8px 16px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  height: 40px;
-  font-size: 13px;
+  @apply bg-slate-800 border-b border-slate-700 px-4 py-2 flex justify-between items-center h-10 text-xs;
 }
 
 .toolbar-left {
-  display: flex;
-  align-items: center;
-  gap: 16px;
+  @apply flex items-center gap-4;
 }
 
 .toolbar-title {
-  font-weight: 600;
-  color: #cccccc;
+  @apply font-semibold text-slate-200;
 }
 
 .project-info {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  @apply flex items-center gap-2;
 }
 
 .project-status {
-  color: #6a9955;
-  font-size: 12px;
-  padding: 2px 6px;
-  background: #2d2d30;
-  border: 1px solid #3e3e42;
-  border-radius: 3px;
+  @apply text-green-600 text-xs px-1.5 py-0.5 bg-slate-800 border border-slate-700 rounded;
 }
 
 .project-status.connected {
-  color: #4ade80;
-  border-color: #4ade80;
+  @apply text-green-400 border-green-400;
 }
 
 .project-path {
-  color: #9cdcfe;
-  font-size: 11px;
-  max-width: 200px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  @apply text-blue-300 text-xs max-w-48 whitespace-nowrap overflow-hidden text-ellipsis;
 }
 
 .toolbar-stats {
-  display: flex;
-  gap: 16px;
-  color: #9cdcfe;
-  font-size: 12px;
+  @apply flex gap-4 text-blue-300 text-xs;
 }
 
 .toolbar-right {
-  display: flex;
-  gap: 8px;
-  align-items: center;
+  @apply flex gap-2 items-center;
 }
 
 .toolbar-btn {
-  background: #3c3c3c;
-  border: 1px solid #464647;
-  color: #cccccc;
-  padding: 4px 8px;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 11px;
-  transition: all 0.2s;
-}
-
-.toolbar-btn:hover {
-  background: #404040;
-  border-color: #5a5a5a;
-}
-
-.toolbar-btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
+  @apply bg-slate-600 border border-slate-500 text-slate-200 px-2 py-1 rounded cursor-pointer text-xs transition-all duration-200 hover:bg-slate-500 hover:border-slate-400 disabled:opacity-60 disabled:cursor-not-allowed;
 }
 
 .toolbar-btn.active {
-  background: #0e639c;
-  border-color: #007acc;
-  color: white;
+  @apply bg-sky-600 border-sky-500 text-white;
 }
 
 .spinning {
-  animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
+  @apply animate-spin;
 }
 
 .status-indicator {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: #4ade80;
-  font-size: 11px;
+  @apply flex items-center gap-1.5 text-green-400 text-xs;
 }
 
 .status-dot {
-  width: 6px;
-  height: 6px;
-  background: #4ade80;
-  border-radius: 50%;
-  animation: pulse 2s infinite;
-}
-
-@keyframes pulse {
-  0% { opacity: 1; }
-  50% { opacity: 0.5; }
-  100% { opacity: 1; }
+  @apply w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse-dot;
 }
 </style>

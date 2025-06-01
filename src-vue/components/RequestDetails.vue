@@ -78,107 +78,66 @@ export default {
 </script>
 
 <style scoped>
+@reference "../style.css";
+
 .details-panel {
-  flex: 1;
-  background: #1e1e1e;
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Droid Sans Mono', monospace;
-  color: #d4d4d4;
+  @apply flex-1 bg-slate-900 flex flex-col h-full font-mono text-slate-300;
 }
 
 .details-header {
-  background: #2d2d30;
-  padding: 12px 16px;
-  border-bottom: 1px solid #3e3e42;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  flex-shrink: 0;
+  @apply bg-slate-800 px-4 py-3 border-b border-slate-700 flex justify-between items-center flex-shrink-0;
 }
 
 .details-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: #cccccc;
+  @apply text-xs font-semibold text-slate-200;
 }
 
 .details-id {
-  font-family: 'SF Mono', monospace;
-  color: #9cdcfe;
-  font-size: 11px;
-  background: #3c3c3c;
-  padding: 2px 6px;
-  border-radius: 3px;
+  @apply font-mono text-blue-300 text-xs bg-slate-600 px-1.5 py-0.5 rounded;
 }
 
 .details-content {
-  flex: 1;
-  overflow-y: auto;
-  padding: 16px;
-  height: 0;
+  @apply flex-1 overflow-y-auto p-4 h-0;
 }
 
 .log-entry {
-  margin-bottom: 12px;
-  padding: 8px 12px;
-  background: #262626;
-  border-radius: 4px;
-  border-left: 3px solid #007acc;
-  font-size: 12px;
-  line-height: 1.4;
+  @apply mb-3 p-3 bg-neutral-800 rounded border-l-4 border-sky-500 text-xs leading-normal;
 }
 
 .log-entry:last-child {
-  border-left-color: #4ade80;
-  background: #1a2e1a;
+  @apply border-l-green-400 bg-green-900 opacity-20;
 }
 
 .log-content {
-  color: #d4d4d4;
-  white-space: pre-wrap;
-  word-break: break-all;
-  margin-bottom: 6px;
+  @apply text-slate-300 whitespace-pre-wrap break-all mb-1.5;
 }
 
 .log-timestamp {
-  color: #6a9955;
-  font-size: 10px;
-  text-align: right;
+  @apply text-green-600 text-xs text-right;
 }
 
 .empty-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: #6a9955;
-  font-size: 14px;
+  @apply flex flex-col items-center justify-center h-full text-green-600 text-sm;
 }
 
 .empty-icon {
-  font-size: 48px;
-  margin-bottom: 16px;
-  opacity: 0.5;
+  @apply text-5xl mb-4 opacity-50;
 }
 
 /* Custom scrollbar for webkit browsers */
 .details-content::-webkit-scrollbar {
-  width: 8px;
+  @apply w-2;
 }
 
 .details-content::-webkit-scrollbar-track {
-  background: #1e1e1e;
+  @apply bg-slate-900;
 }
 
 .details-content::-webkit-scrollbar-thumb {
-  background: #3c3c3c;
-  border-radius: 4px;
+  @apply bg-slate-600 rounded;
 }
 
 .details-content::-webkit-scrollbar-thumb:hover {
-  background: #4a4a4a;
+  @apply bg-slate-500;
 }
 </style>

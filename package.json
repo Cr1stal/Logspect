@@ -1,6 +1,6 @@
 {
-  "name": "logman",
-  "version": "1.0.0",
+  "name": "logspect",
+  "version": "0.1.0",
   "description": "",
   "main": "src/main.js",
   "type": "module",
@@ -13,8 +13,8 @@
     "dist": "pnpm build && electron-builder"
   },
   "build": {
-    "appId": "com.logman.app",
-    "productName": "LogMan",
+    "appId": "com.logspect.app",
+    "productName": "logspect",
     "copyright": "Copyright © 2025 Bilal Budhani",
     "mac": {
       "target": "dmg"
@@ -25,16 +25,18 @@
   "license": "ISC",
   "packageManager": "pnpm@10.11.0",
   "devDependencies": {
+    "@tailwindcss/vite": "^4.1.8",
+    "@vitejs/plugin-vue": "^5.2.4",
     "cross-env": "^7.0.3",
     "electron": "^36.3.2",
     "electron-builder": "^26.0.12",
     "electron-devtools-installer": "^4.0.0",
+    "tailwindcss": "^4.1.8",
     "vite": "^6.3.5",
     "vite-plugin-vue-devtools": "^7.7.6",
     "wait-on": "^8.0.3"
   },
   "dependencies": {
-    "@vitejs/plugin-vue": "^5.2.4",
     "minisearch": "^7.1.2",
     "pinia": "^3.0.2",
     "vue": "^3.5.16"

@@ -1,4 +1,4 @@
-# LogMan - Log Management Solution
+# Logspect - Log Management Solution
 
 A powerful Electron-based log management application built with Vue.js and Vite.
 
