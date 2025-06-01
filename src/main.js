@@ -529,6 +529,19 @@ ipcMain.handle('clear-logs', () => {
   }
 });
 
+// Install Vue DevTools in development
+if (isDev) {
+  import('electron-devtools-installer').then(({ default: installExtension, VUEJS3_DEVTOOLS }) => {
+    app.whenReady().then(() => {
+      installExtension(VUEJS3_DEVTOOLS)
+        .then((name) => console.log(`Added Extension: ${name}`))
+        .catch((err) => console.log('An error occurred installing Vue DevTools: ', err));
+    });
+  }).catch(err => {
+    console.log('Could not load electron-devtools-installer:', err);
+  });
+}
+
 app.whenReady().then(() => {
   createWindow()
   // Don't start watching automatically - wait for user to select directory

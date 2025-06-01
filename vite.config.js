@@ -1,9 +1,21 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import vueDevTools from 'vite-plugin-vue-devtools'
+
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [
+    vue({
+      template: {
+        compilerOptions: {
+          // Enable Vue DevTools in development
+          isCustomElement: () => false
+        }
+      }
+    }),
+    vueDevTools()
+  ],
   root: 'src-vue',
   base: './',
   build: {
@@ -18,5 +30,10 @@ export default defineConfig({
     alias: {
       '@': '/src'
     }
+  },
+  define: {
+    __VUE_OPTIONS_API__: true,
+    __VUE_PROD_DEVTOOLS__: false,
+    __VUE_PROD_HYDRATION_MISMATCH_DETAILS__: false
   }
 })

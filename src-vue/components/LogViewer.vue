@@ -113,7 +113,7 @@
 
         <div class="details-panel">
           <div class="details-header">
-            <div class="details-title">Request Details</div>
+            <div class="details-title">{{ selectedRequest ? (selectedRequest.title || `${selectedRequest.method} ${selectedRequest.path}`) : 'Request Details' }}</div>
             <div class="details-id">{{ selectedRequestId || 'Select a request' }}</div>
           </div>
 
@@ -196,6 +196,9 @@ export default {
     selectedRequest() {
       if (!this.selectedRequestId) return null;
       const request = this.logData.requests.find(req => req.requestId === this.selectedRequestId);
+      console.log('selectedRequest - requestId:', this.selectedRequestId);
+      console.log('selectedRequest - found request:', request);
+      console.log('selectedRequest - title:', request?.title);
       if (!request) return null;
 
       // Return a copy of the request with entries sorted in ascending order (oldest first)
