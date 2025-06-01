@@ -1,0 +1,28 @@
+{
+  "name": "logman",
+  "version": "1.0.0",
+  "description": "",
+  "main": "src/main.js",
+  "type": "module",
+  "scripts": {
+    "start": "electron .",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dist": "electron-builder"
+  },
+  "build": {
+    "appId": "com.logman.app",
+    "productName": "LogMan",
+    "copyright": "Copyright © 2025 Bilal Budhani",
+    "mac": {
+      "target": "dmg"
+    }
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.11.0",
+  "devDependencies": {
+    "electron-builder": "^26.0.12",
+    "electron": "^36.3.2"
+  }
+}
