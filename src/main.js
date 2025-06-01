@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog } from 'electron'
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -9,7 +9,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 let lastSize = 0;
-const logFilePath = `/Users/bilal/SparkLoop/SparkLoop/log/development.log`;
+let logFilePath = null; // Will be set when user selects directory
+let projectDirectory = null;
+let isWatching = false;
+let watcher = null;
 let mainWindow = null; // Store reference to main window
 
 // Efficient storage for grouped log entries by request ID
@@ -17,6 +20,172 @@ const logEntriesByRequestId = new Map();
 
 // Regex to extract request ID from log lines like [aa32797f-b087-4d45-9d99-28198952a784]
 const requestIdRegex = /^\[([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\]/;
+
+// Function to validate if directory is a Rails project
+const validateRailsProject = async (dirPath) => {
+  try {
+    const gemfilePath = path.join(dirPath, 'Gemfile');
+    await fs.promises.access(gemfilePath, fs.constants.F_OK);
+
+    // Additional check: read Gemfile content to ensure it's actually a Rails project
+    const gemfileContent = await fs.promises.readFile(gemfilePath, 'utf8');
+    const hasRailsGem = gemfileContent.includes('rails') || gemfileContent.includes('gem "rails"') || gemfileContent.includes("gem 'rails'");
+
+    return {
+      valid: true,
+      hasRailsGem: hasRailsGem,
+      gemfilePath: gemfilePath
+    };
+  } catch (error) {
+    return {
+      valid: false,
+      error: error.message
+    };
+  }
+};
+
+// Function to check if log file exists
+const checkLogFile = async (dirPath) => {
+  try {
+    const logPath = path.join(dirPath, 'log', 'development.log');
+    const stats = await fs.promises.stat(logPath);
+    return {
+      exists: true,
+      path: logPath,
+      size: stats.size,
+      modified: stats.mtime
+    };
+  } catch (error) {
+    return {
+      exists: false,
+      path: path.join(dirPath, 'log', 'development.log'),
+      error: error.message
+    };
+  }
+};
+
+// Function to stop watching current file
+const stopWatching = () => {
+  if (isWatching && watcher) {
+    fs.unwatchFile(logFilePath);
+    isWatching = false;
+    watcher = null;
+    console.log('Stopped watching previous log file');
+  }
+};
+
+// Function to start watching new log file
+const startWatching = async (newLogPath) => {
+  stopWatching();
+
+  logFilePath = newLogPath;
+  lastSize = 0;
+
+  // Clear previous log data
+  logEntriesByRequestId.clear();
+  streamDataToRenderer();
+
+  try {
+    const stats = await fs.promises.stat(logFilePath);
+    lastSize = stats.size;
+    console.log(`Started watching log file: ${logFilePath}`);
+    console.log(`Initial file size: ${lastSize} bytes`);
+  } catch (err) {
+    console.log('Log file not found, will wait for it to be created:', logFilePath);
+    lastSize = 0;
+  }
+
+  fs.watchFile(logFilePath, {
+    persistent: true,
+    interval: 500
+  }, (curr, prev) => {
+    if (curr.mtime > prev.mtime) {
+      console.log('File change detected...');
+      readLogFile();
+    }
+  });
+
+  isWatching = true;
+
+  // Notify renderer about the new project
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('project-selected', {
+      projectDirectory: projectDirectory,
+      logFilePath: logFilePath,
+      isWatching: true
+    });
+  }
+};
+
+// IPC handler for directory selection
+ipcMain.handle('select-directory', async () => {
+  try {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openDirectory'],
+      title: 'Select Rails Project Directory',
+      message: 'Choose a directory containing a Rails project (with Gemfile)'
+    });
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return { success: false, message: 'No directory selected' };
+    }
+
+    const selectedDir = result.filePaths[0];
+
+    // Validate Rails project
+    const validation = await validateRailsProject(selectedDir);
+    if (!validation.valid) {
+      return {
+        success: false,
+        message: 'This directory does not contain a Gemfile. Please select a Rails project directory.'
+      };
+    }
+
+    // Check log file
+    const logCheck = await checkLogFile(selectedDir);
+
+    projectDirectory = selectedDir;
+
+    if (logCheck.exists) {
+      await startWatching(logCheck.path);
+      return {
+        success: true,
+        message: `Successfully connected to Rails project`,
+        projectDir: selectedDir,
+        logFilePath: logCheck.path,
+        logFileExists: true,
+        hasRailsGem: validation.hasRailsGem
+      };
+    } else {
+      // Log file doesn't exist yet, but we can still watch for it
+      await startWatching(logCheck.path);
+      return {
+        success: true,
+        message: `Rails project selected. Waiting for log file to be created.`,
+        projectDir: selectedDir,
+        logFilePath: logCheck.path,
+        logFileExists: false,
+        hasRailsGem: validation.hasRailsGem
+      };
+    }
+  } catch (error) {
+    console.error('Error selecting directory:', error);
+    return {
+      success: false,
+      message: `Error: ${error.message}`
+    };
+  }
+});
+
+// IPC handler to get current project info
+ipcMain.handle('get-project-info', () => {
+  return {
+    projectDirectory: projectDirectory,
+    logFilePath: logFilePath,
+    isWatching: isWatching,
+    hasProject: !!projectDirectory
+  };
+});
 
 // Function to send data to renderer process
 const streamDataToRenderer = () => {
@@ -199,6 +368,11 @@ const displayLogsByRequestId = () => {
 };
 
 const readLogFile = async () => {
+  if (!logFilePath) {
+    console.log('No log file path set. Please select a Rails project directory first.');
+    return;
+  }
+
   try {
     const stats = await fs.promises.stat(logFilePath);
     const currentSize = stats.size;
@@ -256,29 +430,6 @@ const readLogFile = async () => {
   }
 };
 
-const watchFile = async () => {
-  // Initialize by reading current file size
-  try {
-    const stats = await fs.promises.stat(logFilePath);
-    lastSize = stats.size;
-    console.log(`Started watching log file: ${logFilePath}`);
-    console.log(`Initial file size: ${lastSize} bytes`);
-  } catch (err) {
-    console.error('Log file not found, will wait for it to be created:', logFilePath);
-    lastSize = 0;
-  }
-
-  fs.watchFile(logFilePath, {
-    persistent: true,
-    interval: 500
-  }, (curr, prev) => {
-    if (curr.mtime > prev.mtime) {
-      console.log('File change detected...');
-      readLogFile();
-    }
-  });
-};
-
 const createWindow = () => {
   const win = new BrowserWindow({
     width: 1200,
@@ -327,7 +478,7 @@ ipcMain.handle('get-log-data', () => {
 
 app.whenReady().then(() => {
   createWindow()
-  watchFile()
+  // Don't start watching automatically - wait for user to select directory
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
