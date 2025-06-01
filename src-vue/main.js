@@ -1,8 +1,13 @@
 import { createApp } from 'vue'
+import { createPinia } from 'pinia'
 import App from './App.vue'
 import './style.css'
 
 const app = createApp(App)
+
+// Create and use Pinia store
+const pinia = createPinia()
+app.use(pinia)
 
 // Enable Vue DevTools in development
 if (process.env.NODE_ENV === 'development') {

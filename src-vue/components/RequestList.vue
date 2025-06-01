@@ -1,7 +1,7 @@
 <template>
   <div class="requests-panel">
     <div class="panel-header">
-      Requests ({{ filteredRequests.length }})
+      Requests ({{ displayedRequests.length }})
     </div>
 
     <div class="filter-section">
@@ -9,7 +9,7 @@
         type="text"
         class="filter-input"
         placeholder="Search requests... (supports fuzzy search)"
-        v-model="searchTerm"
+        :value="logStore.searchTerm"
         @input="updateSearch"
       >
     </div>
@@ -21,7 +21,7 @@
       </div>
 
       <div
-        v-for="request in filteredRequests"
+        v-for="request in displayedRequests"
         :key="request.requestId"
         :class="['request-item', { 'selected': selectedRequestId === request.requestId }]"
         @click="$emit('select-request', request.requestId)"
@@ -45,6 +45,7 @@
 
 <script>
 import MiniSearch from 'minisearch'
+import { useLogStore } from '../stores/logStore.js'
 
 export default {
   name: 'RequestList',
@@ -62,29 +63,29 @@ export default {
       default: null
     }
   },
+  setup() {
+    const logStore = useLogStore()
+    return { logStore }
+  },
   data() {
     return {
-      searchTerm: '',
       miniSearch: null,
       searchResults: []
     }
   },
   computed: {
-    filteredRequests() {
-      if (!this.searchTerm.trim()) {
+    displayedRequests() {
+      const searchTerm = this.logStore.searchTerm.trim();
+
+      if (!searchTerm) {
         // If no search term, return all requests sorted by last seen
         return [...this.requests].sort((a, b) => new Date(b.lastSeen) - new Date(a.lastSeen));
       }
 
       if (!this.miniSearch || this.searchResults.length === 0) {
-        // Fallback to simple search if MiniSearch isn't ready
-        const searchLower = this.searchTerm.toLowerCase();
-        return this.requests.filter(request => {
-          return request.requestId.toLowerCase().includes(searchLower) ||
-                 request.method.toLowerCase().includes(searchLower) ||
-                 request.path.toLowerCase().includes(searchLower) ||
-                 request.title.toLowerCase().includes(searchLower);
-        }).sort((a, b) => new Date(b.lastSeen) - new Date(a.lastSeen));
+        // Use store's simple search fallback
+        this.logStore.updateFilteredRequests();
+        return this.logStore.filteredRequests;
       }
 
       // Return MiniSearch results with relevance scoring
@@ -157,14 +158,17 @@ export default {
         this.miniSearch.addAll(searchDocuments);
 
         // Re-run search if there's an active search term
-        if (this.searchTerm.trim()) {
+        if (this.logStore.searchTerm.trim()) {
           this.performSearch();
         }
       } catch (error) {
         console.error('Error rebuilding search index:', error);
       }
     },
-    updateSearch() {
+    updateSearch(event) {
+      const searchTerm = event.target.value;
+      this.logStore.setSearchTerm(searchTerm);
+
       // Debounce search to avoid excessive re-indexing
       clearTimeout(this.searchTimeout);
       this.searchTimeout = setTimeout(() => {
@@ -172,15 +176,15 @@ export default {
       }, 150);
     },
     performSearch() {
-      if (!this.miniSearch || !this.searchTerm.trim()) {
+      if (!this.miniSearch || !this.logStore.searchTerm.trim()) {
         this.searchResults = [];
         return;
       }
 
       try {
-        this.searchResults = this.miniSearch.search(this.searchTerm.trim(), {
+        this.searchResults = this.miniSearch.search(this.logStore.searchTerm.trim(), {
           // Override default options for specific searches if needed
-          fuzzy: this.searchTerm.length > 3 ? 0.2 : false, // Only use fuzzy for longer terms
+          fuzzy: this.logStore.searchTerm.length > 3 ? 0.2 : false, // Only use fuzzy for longer terms
           boost: {
             method: 3,
             path: 2,
