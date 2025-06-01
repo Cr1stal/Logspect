@@ -1,0 +1,2 @@
+app: pnpm start
+vite: pnpm dev

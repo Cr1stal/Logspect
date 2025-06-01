@@ -8,6 +8,10 @@ import { dirname } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// Check if we're in development mode
+const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
+const VITE_DEV_SERVER_URL = 'http://localhost:5173';
+
 let lastSize = 0;
 let logFilePath = null; // Will be set when user selects directory
 let projectDirectory = null;
@@ -430,7 +434,7 @@ const readLogFile = async () => {
   }
 };
 
-const createWindow = () => {
+const createWindow = async () => {
   const win = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -442,7 +446,33 @@ const createWindow = () => {
   })
 
   mainWindow = win; // Store reference
-  win.loadFile('public/index.html')
+
+  // Load app from Vite dev server in development, or from built files in production
+  if (isDev) {
+    try {
+      console.log('Development mode: Loading from Vite dev server...');
+      await win.loadURL(VITE_DEV_SERVER_URL);
+
+      // Open DevTools in development
+      win.webContents.openDevTools();
+    } catch (error) {
+      console.error('Failed to load from Vite dev server. Make sure to run "pnpm dev" first.');
+      console.error('Error:', error.message);
+
+      // Fallback to the original HTML file if Vite server is not running
+      console.log('Falling back to static HTML file...');
+      win.loadFile('public/index.html');
+    }
+  } else {
+    // Production mode: load from built files
+    const indexPath = path.join(__dirname, '../dist/index.html');
+    if (fs.existsSync(indexPath)) {
+      win.loadFile(indexPath);
+    } else {
+      // Fallback to public/index.html if dist doesn't exist
+      win.loadFile('public/index.html');
+    }
+  }
 
   // Send initial data when window is ready
   win.webContents.once('dom-ready', () => {
