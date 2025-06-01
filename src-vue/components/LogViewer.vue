@@ -1,99 +1,137 @@
 <template>
   <div class="log-viewer">
-    <!-- Welcome Screen -->
-    <div v-if="!hasProject" class="welcome-screen">
-      <div class="welcome-content">
-        <div class="welcome-icon">🚀</div>
-        <h2>Welcome to LogMan</h2>
-        <p>Select a Rails project directory to start monitoring logs</p>
-        <div class="welcome-features">
-          <div class="feature-item">
-            <span class="feature-icon">📁</span>
-            <span>Automatically detects Rails projects by checking for Gemfile</span>
-          </div>
-          <div class="feature-item">
-            <span class="feature-icon">📊</span>
-            <span>Real-time log monitoring with request grouping</span>
-          </div>
-          <div class="feature-item">
-            <span class="feature-icon">🔍</span>
-            <span>Smart HTTP method and path extraction</span>
-          </div>
-          <div class="feature-item">
-            <span class="feature-icon">⚡</span>
-            <span>Developer console-style interface</span>
-          </div>
+    <!-- Toolbar -->
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <div class="toolbar-title">🚀 LogMan - Developer Console</div>
+        <div class="project-info">
+          <span v-if="!hasProject" class="project-status">No project selected</span>
+          <template v-else>
+            <span class="project-status connected">📁 {{ projectName }}</span>
+            <span class="project-path" :title="projectDirectory">{{ projectDirectory }}</span>
+          </template>
         </div>
-        <button class="welcome-btn" @click="selectProject">
-          📁 Select Rails Project Directory
+        <div v-if="hasProject" class="toolbar-stats">
+          <span>Requests: <span id="totalRequests">{{ logData.totalRequests }}</span></span>
+          <span>Entries: <span id="totalEntries">{{ totalEntries }}</span></span>
+        </div>
+      </div>
+      <div class="toolbar-right">
+        <button class="toolbar-btn" @click="selectProject">
+          {{ hasProject ? '📁 Change Project' : '📁 Select Project' }}
         </button>
+        <button v-if="hasProject" class="toolbar-btn" @click="refreshLogs" :disabled="isRefreshing">
+          <span :class="{ 'spinning': isRefreshing }">⟲</span> Refresh
+        </button>
+        <button v-if="hasProject" class="toolbar-btn" @click="clearDisplay">🗑 Clear</button>
+        <button v-if="hasProject" :class="['toolbar-btn', { 'active': autoScroll }]" @click="toggleAutoScroll">
+          {{ autoScroll ? '📜 Auto Scroll' : '⏸️ Manual' }}
+        </button>
+        <div v-if="hasProject && isWatching" class="status-indicator">
+          <div class="status-dot"></div>
+          <span>Live</span>
+        </div>
       </div>
     </div>
 
-    <!-- Console Interface -->
-    <div v-else class="console-interface">
-      <div class="requests-panel">
-        <div class="panel-header">
-          Requests ({{ filteredRequests.length }})
+    <!-- Main Container -->
+    <div class="main-container">
+      <!-- Welcome Screen -->
+      <div v-if="!hasProject" class="welcome-screen">
+        <div class="welcome-content">
+          <div class="welcome-icon">🚀</div>
+          <h2>Welcome to LogMan</h2>
+          <p>Select a Rails project directory to start monitoring logs</p>
+          <div class="welcome-features">
+            <div class="feature-item">
+              <span class="feature-icon">📁</span>
+              <span>Automatically detects Rails projects by checking for Gemfile</span>
+            </div>
+            <div class="feature-item">
+              <span class="feature-icon">📊</span>
+              <span>Real-time log monitoring with request grouping</span>
+            </div>
+            <div class="feature-item">
+              <span class="feature-icon">🔍</span>
+              <span>Smart HTTP method and path extraction</span>
+            </div>
+            <div class="feature-item">
+              <span class="feature-icon">⚡</span>
+              <span>Developer console-style interface</span>
+            </div>
+          </div>
+          <button class="welcome-btn" @click="selectProject">
+            📁 Select Rails Project Directory
+          </button>
         </div>
+      </div>
 
-        <div class="filter-section">
-          <input
-            type="text"
-            class="filter-input"
-            placeholder="Filter by method, path, or request ID..."
-            v-model="searchTerm"
-          >
-        </div>
-
-        <div class="requests-list">
-          <div v-if="logData.totalRequests === 0" class="empty-state">
-            <div class="empty-icon">📄</div>
-            <div>No requests detected yet</div>
+      <!-- Console Interface -->
+      <div v-else class="console-interface">
+        <div class="requests-panel">
+          <div class="panel-header">
+            Requests ({{ filteredRequests.length }})
           </div>
 
-          <div
-            v-for="request in filteredRequests"
-            :key="request.requestId"
-            :class="['request-item', { 'selected': selectedRequestId === request.requestId }]"
-            @click="selectRequest(request.requestId)"
-          >
-            <div :class="['request-status', getRequestStatus(request)]"></div>
-            <div class="request-details">
-              <div class="request-title">
-                <span :class="['request-method', `method-${request.method}`]">{{ request.method }}</span>
-                <span class="request-path">{{ request.path }}</span>
-              </div>
-              <div class="request-id">{{ request.requestId }}</div>
-              <div class="request-meta">
-                <span class="entry-count">{{ request.entriesCount }} entries</span>
-                <span>{{ formatTime(request.lastSeen) }}</span>
+          <div class="filter-section">
+            <input
+              type="text"
+              class="filter-input"
+              placeholder="Search requests... (supports fuzzy search)"
+              v-model="searchTerm"
+              @input="updateSearch"
+            >
+          </div>
+
+          <div class="requests-list">
+            <div v-if="logData.totalRequests === 0" class="empty-state">
+              <div class="empty-icon">📄</div>
+              <div>No requests detected yet</div>
+            </div>
+
+            <div
+              v-for="request in filteredRequests"
+              :key="request.requestId"
+              :class="['request-item', { 'selected': selectedRequestId === request.requestId }]"
+              @click="selectRequest(request.requestId)"
+            >
+              <div :class="['request-status', getRequestStatus(request)]"></div>
+              <div class="request-details">
+                <div class="request-title">
+                  <span :class="['request-method', `method-${request.method}`]">{{ request.method }}</span>
+                  <span class="request-path">{{ request.path }}</span>
+                </div>
+                <div class="request-id">{{ request.requestId }}</div>
+                <div class="request-meta">
+                  <span class="entry-count">{{ request.entriesCount }} entries</span>
+                  <span>{{ formatTime(request.lastSeen) }}</span>
+                </div>
               </div>
             </div>
           </div>
         </div>
-      </div>
 
-      <div class="details-panel">
-        <div class="details-header">
-          <div class="details-title">Request Details</div>
-          <div class="details-id">{{ selectedRequestId || 'Select a request' }}</div>
-        </div>
-
-        <div class="details-content">
-          <div v-if="!selectedRequestId" class="empty-state">
-            <div class="empty-icon">📋</div>
-            <div>Select a request from the left panel to view its logs</div>
+        <div class="details-panel">
+          <div class="details-header">
+            <div class="details-title">Request Details</div>
+            <div class="details-id">{{ selectedRequestId || 'Select a request' }}</div>
           </div>
 
-          <div v-else-if="selectedRequest">
-            <div
-              v-for="(entry, index) in selectedRequest.entries"
-              :key="index"
-              class="log-entry"
-            >
-              <div class="log-content">{{ entry.content }}</div>
-              <div class="log-timestamp">{{ formatDateTime(entry.timestamp) }}</div>
+          <div class="details-content" ref="detailsContent">
+            <div v-if="!selectedRequestId" class="empty-state">
+              <div class="empty-icon">📋</div>
+              <div>Select a request from the left panel to view its logs</div>
+            </div>
+
+            <div v-else-if="selectedRequest">
+              <div
+                v-for="(entry, index) in selectedRequest.entries"
+                :key="index"
+                class="log-entry"
+              >
+                <div class="log-content">{{ entry.content }}</div>
+                <div class="log-timestamp">{{ formatDateTime(entry.timestamp) }}</div>
+              </div>
             </div>
           </div>
         </div>
@@ -103,6 +141,8 @@
 </template>
 
 <script>
+import MiniSearch from 'minisearch'
+
 export default {
   name: 'LogViewer',
   data() {
@@ -115,18 +155,43 @@ export default {
       },
       projectDirectory: '',
       hasProject: false,
-      isWatching: false
+      isWatching: false,
+      miniSearch: null,
+      searchResults: [],
+      autoScroll: true,
+      isRefreshing: false
     }
   },
   computed: {
+    projectName() {
+      if (!this.projectDirectory) return '';
+      return this.projectDirectory.split('/').pop() || 'Unknown Project';
+    },
+    totalEntries() {
+      return this.logData.requests.reduce((sum, req) => sum + req.entriesCount, 0);
+    },
     filteredRequests() {
-      const searchLower = this.searchTerm.toLowerCase();
-      return this.logData.requests.filter(request => {
-        return request.requestId.toLowerCase().includes(searchLower) ||
-               request.method.toLowerCase().includes(searchLower) ||
-               request.path.toLowerCase().includes(searchLower) ||
-               request.title.toLowerCase().includes(searchLower);
-      });
+      if (!this.searchTerm.trim()) {
+        // If no search term, return all requests sorted by last seen
+        return [...this.logData.requests].sort((a, b) => new Date(b.lastSeen) - new Date(a.lastSeen));
+      }
+
+      if (!this.miniSearch || this.searchResults.length === 0) {
+        // Fallback to simple search if MiniSearch isn't ready
+        const searchLower = this.searchTerm.toLowerCase();
+        return this.logData.requests.filter(request => {
+          return request.requestId.toLowerCase().includes(searchLower) ||
+                 request.method.toLowerCase().includes(searchLower) ||
+                 request.path.toLowerCase().includes(searchLower) ||
+                 request.title.toLowerCase().includes(searchLower);
+        }).sort((a, b) => new Date(b.lastSeen) - new Date(a.lastSeen));
+      }
+
+      // Return MiniSearch results with relevance scoring
+      return this.searchResults.map(result => {
+        const request = this.logData.requests.find(req => req.requestId === result.id);
+        return { ...request, searchScore: result.score };
+      }).filter(Boolean);
     },
     selectedRequest() {
       if (!this.selectedRequestId) return null;
@@ -140,15 +205,120 @@ export default {
       };
     }
   },
+  watch: {
+    'logData.requests': {
+      handler: 'rebuildSearchIndex',
+      deep: true
+    },
+    selectedRequest: {
+      handler() {
+        if (this.autoScroll) {
+          this.$nextTick(() => {
+            this.scrollToBottom();
+          });
+        }
+      }
+    }
+  },
   async mounted() {
     if (window.electronAPI) {
       await this.loadProjectInfo();
       this.setupLogListener();
+      this.initializeSearch();
     } else {
       console.warn('Not running in Electron environment');
     }
   },
   methods: {
+    initializeSearch() {
+      // Initialize MiniSearch with configuration optimized for log data
+      this.miniSearch = new MiniSearch({
+        fields: ['requestId', 'method', 'path', 'title'], // fields to index for full-text search
+        storeFields: ['requestId', 'method', 'path', 'title', 'lastSeen'], // fields to return with search results
+        searchOptions: {
+          boost: {
+            method: 3,     // Boost method matches heavily
+            path: 2,       // Boost path matches moderately
+            title: 2,      // Boost title matches moderately
+            requestId: 1   // Normal boost for request ID
+          },
+          fuzzy: 0.2,      // Enable fuzzy search with max edit distance of 20% of term length
+          prefix: true,    // Enable prefix search (so 'get' matches 'get', 'GET', etc.)
+          combineWith: 'AND' // Require all terms to match (can be changed to 'OR' for broader results)
+        },
+        // Custom tokenizer to handle HTTP methods and paths better
+        tokenize: (string) => {
+          // Split on common delimiters and normalize
+          return string.toLowerCase()
+            .split(/[\s\-_\.\/\#\?&=]+/)
+            .filter(token => token.length > 0);
+        },
+        // Custom term processing
+        processTerm: (term) => {
+          // Remove very short terms and normalize
+          if (term.length < 2) return null;
+          return term.toLowerCase();
+        }
+      });
+
+      this.rebuildSearchIndex();
+    },
+    rebuildSearchIndex() {
+      if (!this.miniSearch || !this.logData.requests.length) return;
+
+      try {
+        // Clear existing index
+        this.miniSearch.removeAll();
+
+        // Add all requests to the search index
+        const searchDocuments = this.logData.requests.map(request => ({
+          id: request.requestId,
+          requestId: request.requestId,
+          method: request.method,
+          path: request.path,
+          title: request.title,
+          lastSeen: request.lastSeen
+        }));
+
+        this.miniSearch.addAll(searchDocuments);
+
+        // Re-run search if there's an active search term
+        if (this.searchTerm.trim()) {
+          this.performSearch();
+        }
+      } catch (error) {
+        console.error('Error rebuilding search index:', error);
+      }
+    },
+    updateSearch() {
+      // Debounce search to avoid excessive re-indexing
+      clearTimeout(this.searchTimeout);
+      this.searchTimeout = setTimeout(() => {
+        this.performSearch();
+      }, 150);
+    },
+    performSearch() {
+      if (!this.miniSearch || !this.searchTerm.trim()) {
+        this.searchResults = [];
+        return;
+      }
+
+      try {
+        this.searchResults = this.miniSearch.search(this.searchTerm.trim(), {
+          // Override default options for specific searches if needed
+          fuzzy: this.searchTerm.length > 3 ? 0.2 : false, // Only use fuzzy for longer terms
+          boost: {
+            method: 3,
+            path: 2,
+            title: 2,
+            requestId: 1
+          }
+        });
+      } catch (error) {
+        console.error('Search error:', error);
+        this.searchResults = [];
+      }
+    },
     async loadProjectInfo() {
       try {
         const projectInfo = await window.electronAPI.getProjectInfo();
@@ -184,11 +354,16 @@ export default {
       }
     },
     async refreshLogs() {
+      this.isRefreshing = true;
       try {
         const data = await window.electronAPI.getLogData();
         this.logData = data;
       } catch (error) {
         console.error('Error refreshing logs:', error);
+      } finally {
+        setTimeout(() => {
+          this.isRefreshing = false;
+        }, 1000);
       }
     },
     selectRequest(requestId) {
@@ -203,6 +378,46 @@ export default {
     },
     formatDateTime(timestamp) {
       return new Date(timestamp).toLocaleString();
+    },
+    async clearDisplay() {
+      if (confirm('Clear all request logs? This will remove all captured log data.')) {
+        try {
+          // Clear logs in the main process
+          const result = await window.electronAPI.clearLogs();
+
+          if (result.success) {
+            console.log('Logs cleared successfully from main process');
+
+            // The main process will send a log-data-update event with empty data
+            // which will automatically update our logData through the listener
+
+            // Reset UI state immediately
+            this.selectedRequestId = null;
+            this.searchTerm = '';
+            this.searchResults = [];
+
+            // Rebuild search index with empty data
+            this.rebuildSearchIndex();
+          } else {
+            console.error('Failed to clear logs:', result.message);
+            alert('Failed to clear logs: ' + result.message);
+          }
+        } catch (error) {
+          console.error('Error clearing logs:', error);
+          alert('Error clearing logs: ' + error.message);
+        }
+      }
+    },
+    toggleAutoScroll() {
+      this.autoScroll = !this.autoScroll;
+      if (this.autoScroll) {
+        this.scrollToBottom();
+      }
+    },
+    scrollToBottom() {
+      if (this.$refs.detailsContent) {
+        this.$refs.detailsContent.scrollTop = this.$refs.detailsContent.scrollHeight;
+      }
     }
   }
 }
@@ -214,14 +429,142 @@ export default {
   background: #1e1e1e;
   color: #d4d4d4;
   font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Droid Sans Mono', monospace;
+  overflow: hidden;
+}
+
+.toolbar {
+  background: #2d2d30;
+  border-bottom: 1px solid #3e3e42;
+  padding: 8px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  height: 40px;
+  font-size: 13px;
+}
+
+.toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.toolbar-title {
+  font-weight: 600;
+  color: #cccccc;
+}
+
+.project-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.project-status {
+  color: #6a9955;
+  font-size: 12px;
+  padding: 2px 6px;
+  background: #2d2d30;
+  border: 1px solid #3e3e42;
+  border-radius: 3px;
+}
+
+.project-status.connected {
+  color: #4ade80;
+  border-color: #4ade80;
+}
+
+.project-path {
+  color: #9cdcfe;
+  font-size: 11px;
+  max-width: 200px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.toolbar-stats {
+  display: flex;
+  gap: 16px;
+  color: #9cdcfe;
+  font-size: 12px;
+}
+
+.toolbar-right {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.toolbar-btn {
+  background: #3c3c3c;
+  border: 1px solid #464647;
+  color: #cccccc;
+  padding: 4px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 11px;
+  transition: all 0.2s;
+}
+
+.toolbar-btn:hover {
+  background: #404040;
+  border-color: #5a5a5a;
+}
+
+.toolbar-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.toolbar-btn.active {
+  background: #0e639c;
+  border-color: #007acc;
+  color: white;
+}
+
+.spinning {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #4ade80;
+  font-size: 11px;
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  background: #4ade80;
+  border-radius: 50%;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0% { opacity: 1; }
+  50% { opacity: 0.5; }
+  100% { opacity: 1; }
+}
+
+.main-container {
+  display: flex;
+  height: calc(100vh - 40px);
 }
 
 .welcome-screen {
+  flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
   background: #1e1e1e;
-  height: 100%;
 }
 
 .welcome-content {
@@ -288,6 +631,7 @@ export default {
 }
 
 .console-interface {
+  flex: 1;
   display: flex;
   height: 100%;
 }

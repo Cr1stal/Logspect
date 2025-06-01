@@ -506,6 +506,29 @@ ipcMain.handle('get-log-data', () => {
   };
 });
 
+// IPC handler to clear all log data
+ipcMain.handle('clear-logs', () => {
+  try {
+    // Clear all stored log entries
+    logEntriesByRequestId.clear();
+
+    console.log('All log entries cleared from main process');
+
+    // Notify renderer about the cleared data
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('log-data-update', {
+        totalRequests: 0,
+        requests: []
+      });
+    }
+
+    return { success: true, message: 'All log data cleared successfully' };
+  } catch (error) {
+    console.error('Error clearing log data:', error);
+    return { success: false, message: `Error clearing log data: ${error.message}` };
+  }
+});
+
 app.whenReady().then(() => {
   createWindow()
   // Don't start watching automatically - wait for user to select directory

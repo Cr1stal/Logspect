@@ -6,6 +6,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 // the ipcRenderer without exposing the entire object
 contextBridge.exposeInMainWorld('electronAPI', {
   getLogData: () => ipcRenderer.invoke('get-log-data'),
+  clearLogs: () => ipcRenderer.invoke('clear-logs'),
   onLogDataUpdate: (callback) => {
     ipcRenderer.on('log-data-update', (event, data) => callback(data));
   },
