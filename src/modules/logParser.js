@@ -1,3 +1,5 @@
+import util from 'util'
+
 /**
  * Regex to extract request ID from log lines like [aa32797f-b087-4d45-9d99-28198952a784]
  */
@@ -102,12 +104,12 @@ export const parseLogLine = (logLine) => {
 
   if (match) {
     const requestId = match[1];
-    const content = logLine.trim();
+    const content = logLine.replace(requestIdRegex, '').trim();
     const titleInfo = extractRequestTitle(content);
 
     return {
       requestId: requestId,
-      content: content,
+      content: util.stripVTControlCharacters(content),
       isNewRequest: false, // Will be determined by storage layer
       titleInfo: titleInfo
     };

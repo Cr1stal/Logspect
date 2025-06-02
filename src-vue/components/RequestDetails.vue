@@ -18,7 +18,7 @@
           class="log-entry"
         >
           <div class="log-content">{{ entry.content }}</div>
-          <div class="log-timestamp">{{ formatDateTime(entry.timestamp) }}</div>
+          <!-- <div class="log-timestamp">{{ formatDateTime(entry.timestamp) }}</div> -->
         </div>
       </div>
     </div>
@@ -56,11 +56,11 @@ export default {
   watch: {
     selectedRequest: {
       handler() {
-        // if (this.autoScroll) {
-        //   this.$nextTick(() => {
-        //     this.scrollToBottom();
-        //   });
-        // }
+        if (this.autoScroll) {
+          this.$nextTick(() => {
+            this.scrollToTop();
+          });
+        }
       }
     }
   },
@@ -68,9 +68,9 @@ export default {
     formatDateTime(timestamp) {
       return new Date(timestamp).toLocaleString();
     },
-    scrollToBottom() {
+    scrollToTop() {
       if (this.$refs.detailsContent) {
-        this.$refs.detailsContent.scrollTop = this.$refs.detailsContent.scrollHeight;
+        this.$refs.detailsContent.scrollTop = 0;
       }
     }
   }
@@ -81,7 +81,7 @@ export default {
 @reference "../style.css";
 
 .details-panel {
-  @apply flex-1 bg-slate-900 flex flex-col h-full font-mono text-slate-300;
+  @apply flex-1 bg-slate-900 flex flex-col h-full font-mono text-white;
 }
 
 .details-header {
@@ -89,7 +89,7 @@ export default {
 }
 
 .details-title {
-  @apply text-xs font-semibold text-slate-200;
+  @apply text-xs font-semibold text-slate-100;
 }
 
 .details-id {
@@ -101,15 +101,15 @@ export default {
 }
 
 .log-entry {
-  @apply mb-3 p-3 bg-neutral-800 rounded border-l-4 border-sky-500 text-xs leading-normal;
+  @apply mb-2 px-2 py-1 text-xs leading-normal hover:bg-slate-700 rounded;
 }
 
-.log-entry:last-child {
+/* .log-entry:last-child {
   @apply border-l-green-400 bg-green-900 opacity-20;
-}
+} */
 
 .log-content {
-  @apply text-slate-300 whitespace-pre-wrap break-all mb-1.5;
+  @apply text-white whitespace-pre-wrap break-all mb-1.5;
 }
 
 .log-timestamp {

@@ -7,7 +7,7 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        mono: ['SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Droid Sans Mono', 'monospace'],
+        mono: ['Fira Code', 'SF Mono', 'Monaco', 'Inconsolata', 'Droid Sans Mono', 'monospace'],
       },
       animation: {
         'pulse-dot': 'pulse-dot 2s infinite',
