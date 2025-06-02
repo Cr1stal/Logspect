@@ -26,7 +26,6 @@
         :class="['request-item', { 'selected': selectedRequestId === request.requestId }]"
         @click="$emit('select-request', request.requestId)"
       >
-        <div :class="['request-status', getRequestStatus(request)]"></div>
         <div class="request-details">
           <div class="request-title">
             <span :class="['request-method', `method-${request.method}`]">{{ request.method }}</span>
@@ -78,8 +77,8 @@ export default {
       const searchTerm = this.logStore.searchTerm.trim();
 
       if (!searchTerm) {
-        // If no search term, return all requests sorted by last seen
-        return [...this.requests].sort((a, b) => new Date(b.lastSeen) - new Date(a.lastSeen));
+        // If no search term, return all requests sorted by first seen
+        return [...this.requests].sort((a, b) => new Date(a.firstSeen) - new Date(b.firstSeen));
       }
 
       if (!this.miniSearch || this.searchResults.length === 0) {
