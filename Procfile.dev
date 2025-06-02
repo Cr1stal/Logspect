@@ -1,2 +1,2 @@
 app: pnpm start
-vite: pnpm dev
+vite: NODE_ENV=development pnpm dev

@@ -19,12 +19,12 @@ let mainWindow = null;
  */
 export const createWindow = async () => {
   const win = new BrowserWindow({
-    width: 1200,
+    width: 1280,
     height: 800,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      preload: path.join(__dirname, '../../preload.js')
+      preload: path.join(__dirname, '../preload.js')
     }
   });
 
@@ -38,20 +38,11 @@ export const createWindow = async () => {
 
   // Load app from Vite dev server in development, or from built files in production
   if (isDev) {
-    try {
       console.log('Development mode: Loading from Vite dev server...');
       await win.loadURL(VITE_DEV_SERVER_URL);
 
       // Open DevTools in development
       win.webContents.openDevTools();
-    } catch (error) {
-      console.error('Failed to load from Vite dev server. Make sure to run "pnpm dev" first.');
-      console.error('Error:', error.message);
-
-      // Fallback to the original HTML file if Vite server is not running
-      console.log('Falling back to static HTML file...');
-      win.loadFile('public/index.html');
-    }
   } else {
     // Production mode: load from built files
     const indexPath = path.join(__dirname, '../../dist/index.html');

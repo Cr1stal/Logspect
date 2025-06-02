@@ -16,6 +16,11 @@
     "appId": "com.logspect.app",
     "productName": "logspect",
     "copyright": "Copyright © 2025 Bilal Budhani",
+    "files": [
+      "src/**/*",
+      "public/**/*",
+      "images/**/*"
+    ],
     "mac": {
       "target": "dmg"
     }

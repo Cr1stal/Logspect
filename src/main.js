@@ -1,5 +1,5 @@
 /**
- * LogMan - Rails Log Monitor
+ * Logspect - Rails Log Monitor
  * Main Electron process entry point
  *
  * This file now uses a modular architecture for better maintainability:

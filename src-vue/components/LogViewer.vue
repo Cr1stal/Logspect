@@ -76,7 +76,7 @@ export default {
 @reference "../style.css";
 
 .log-viewer {
-  @apply h-screen bg-slate-900 text-slate-300 font-mono overflow-hidden;
+  @apply h-screen bg-slate-800 text-slate-300 font-mono overflow-hidden;
 }
 
 .main-container {

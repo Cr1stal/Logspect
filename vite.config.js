@@ -2,6 +2,7 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import vueDevTools from 'vite-plugin-vue-devtools'
 import tailwindcss from '@tailwindcss/vite'
+import { resolve } from 'path'
 
 // https://vitejs.dev/config/
 export default defineConfig({
@@ -20,8 +21,12 @@ export default defineConfig({
   root: 'src-vue',
   base: './',
   build: {
-    outDir: '../dist',
+    outDir: '../public',
     emptyOutDir: true,
+    rollupOptions: {
+      // Ensure we don't bundle Node.js modules that Electron provides
+      external: ['electron']
+    }
   },
   server: {
     port: 5173,
@@ -29,12 +34,16 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@': '/src-vue'
+      '@': resolve(__dirname, 'src-vue')
     }
   },
   define: {
     __VUE_OPTIONS_API__: true,
     __VUE_PROD_DEVTOOLS__: false,
     __VUE_PROD_HYDRATION_MISMATCH_DETAILS__: false
+  },
+  // Electron-specific optimizations
+  optimizeDeps: {
+    exclude: ['electron']
   }
 })
