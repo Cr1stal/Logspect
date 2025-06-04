@@ -1,7 +1,7 @@
 {
   "name": "logspect",
-  "version": "0.1.0",
-  "description": "",
+  "description": "Logspect is a tool for viewing and analyzing Ruby on Rails logs.",
+  "version": "0.1.1",
   "main": "src/main.js",
   "type": "module",
   "scripts": {
@@ -16,13 +16,22 @@
     "appId": "com.logspect.app",
     "productName": "logspect",
     "copyright": "Copyright © 2025 Bilal Budhani",
+    "forceCodeSigning": true,
+    "afterSign": "build/aftersign.js",
     "files": [
       "src/**/*",
       "public/**/*",
       "images/**/*"
     ],
+    "dmg": {
+      "sign": false
+    },
     "mac": {
-      "target": "dmg"
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "target": "dmg",
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
     }
   },
   "keywords": [],
@@ -36,6 +45,7 @@
     "electron": "^36.3.2",
     "electron-builder": "^26.0.12",
     "electron-devtools-installer": "^4.0.0",
+    "electron-notarize": "^1.2.2",
     "tailwindcss": "^4.1.8",
     "vite": "^6.3.5",
     "vite-plugin-vue-devtools": "^7.7.6",
