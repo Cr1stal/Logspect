@@ -45,7 +45,7 @@
     "electron": "^36.3.2",
     "electron-builder": "^26.0.12",
     "electron-devtools-installer": "^4.0.0",
-    "electron-notarize": "^1.2.2",
+    "@electron/notarize": "^1.2.2",
     "tailwindcss": "^4.1.8",
     "vite": "^6.3.5",
     "vite-plugin-vue-devtools": "^7.7.6",

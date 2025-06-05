@@ -15,10 +15,12 @@
         <div
           v-for="(entry, index) in sortedEntries"
           :key="index"
-          class="log-entry"
+          class="log-entry group"
+          @click="copyToClipboard(entry.content)"
+          @mouseleave="clearCopyText"
         >
           <div class="log-content">{{ entry.content }}</div>
-          <!-- <div class="log-timestamp">{{ formatDateTime(entry.timestamp) }}</div> -->
+          <div class="group-hover:opacity-100 opacity-0 text-xs text-green-300 log-timestamp">{{ copyText }}</div>
         </div>
       </div>
     </div>
@@ -28,6 +30,11 @@
 <script>
 export default {
   name: 'RequestDetails',
+  data() {
+    return {
+      copyText: 'click to copy'
+    }
+  },
   props: {
     selectedRequestId: {
       type: String,
@@ -72,6 +79,16 @@ export default {
       if (this.$refs.detailsContent) {
         this.$refs.detailsContent.scrollTop = 0;
       }
+    },
+    copyToClipboard(text) {
+      navigator.clipboard.writeText(text);
+      this.copyText = 'copied';
+      setTimeout(() => {
+        this.clearCopyText();
+      }, 2000);
+    },
+    clearCopyText() {
+      this.copyText = 'click to copy';
     }
   }
 }
