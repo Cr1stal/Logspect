@@ -77,6 +77,8 @@ export const initializeApp = () => {
 
   autoUpdater.logger = log
   autoUpdater.logger.transports.file.level = "debug"
+  autoUpdater.forceDevUpdateConfig = true
+
 
   app.whenReady().then(() => {
     createWindow();

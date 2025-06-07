@@ -11,14 +11,15 @@
     "preview": "vite preview",
     "test": "echo \"Error: no test specified\" && exit 1",
     "dist": "pnpm build && electron-builder",
-    "release": "pnpm dist && electron-builder --publish always"
+    "upload:release": "node scripts/upload-release.js",
+    "release": "rimraf dist && pnpm dist && electron-builder --publish always && pnpm upload:release"
   },
   "build": {
     "appId": "com.logspect.app",
     "productName": "logspect",
     "copyright": "Copyright © 2025 Bilal Budhani",
     "forceCodeSigning": true,
-    "afterSign": "build/aftersign.js",
+    "afterSign": "scripts/aftersign.js",
     "files": [
       "src/**/*",
       "public/**/*",
@@ -30,7 +31,7 @@
     "mac": {
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
-      "target": "dmg",
+      "target": "default",
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist"
     },
@@ -53,6 +54,7 @@
     "electron-devtools-installer": "^4.0.0",
     "tailwindcss": "^4.1.8",
     "vite": "^6.3.5",
+    "@aws-sdk/client-s3": "^3.0.0",
     "vite-plugin-vue-devtools": "^7.7.6",
     "wait-on": "^8.0.3"
   },

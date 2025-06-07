@@ -1,0 +1,6 @@
+ignoredBuiltDependencies:
+  - electron-winstaller
+onlyBuiltDependencies:
+  - '@tailwindcss/oxide'
+  - electron
+  - esbuild

@@ -13,10 +13,10 @@
  */
 
 import { initializeApp } from './modules/app.js';
-import { installVueDevTools } from './modules/devtools.js';
+// import { installVueDevTools } from './modules/devtools.js';
 
 // Install Vue DevTools in development mode
-installVueDevTools();
+// installVueDevTools();
 
 // Initialize the Electron application
 initializeApp();
