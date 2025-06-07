@@ -1,4 +1,5 @@
 import { ipcMain, dialog } from 'electron';
+import log from "electron-log";
 import { prepareProject } from './projectManager.js';
 import { startWatching, getWatchingStatus } from './logWatcher.js';
 import { getFormattedLogData, clearAllLogData } from './logStorage.js';
@@ -123,7 +124,7 @@ export const setupIpcHandlers = () => {
       const success = clearAllLogData();
 
       if (success) {
-        console.log('All log entries cleared from main process');
+        log.info('All log entries cleared from main process');
 
         // Notify renderer about the cleared data
         streamDataToRenderer();
@@ -133,10 +134,10 @@ export const setupIpcHandlers = () => {
         return { success: false, message: 'Failed to clear log data' };
       }
     } catch (error) {
-      console.error('Error clearing log data:', error);
+      log.error('Error clearing log data:', error);
       return { success: false, message: `Error clearing log data: ${error.message}` };
     }
   });
 
-  console.log('IPC handlers set up successfully');
+  log.info('IPC handlers set up successfully');
 };

@@ -1,4 +1,4 @@
-import { notarize } from 'electron-notarize';
+import { notarize } from '@electron/notarize';
 
 export default async function notarizing(context) {
   const { electronPlatformName, appOutDir } = context;

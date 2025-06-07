@@ -1,7 +1,7 @@
 {
   "name": "logspect",
   "description": "Logspect is a tool for viewing and analyzing Ruby on Rails logs.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "main": "src/main.js",
   "type": "module",
   "scripts": {
@@ -10,7 +10,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "echo \"Error: no test specified\" && exit 1",
-    "dist": "pnpm build && electron-builder"
+    "dist": "pnpm build && electron-builder",
+    "release": "pnpm dist && electron-builder --publish always"
   },
   "build": {
     "appId": "com.logspect.app",
@@ -32,6 +33,10 @@
       "target": "dmg",
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist"
+    },
+    "publish": {
+      "provider": "generic",
+      "url": "https://releases.logspect.app"
     }
   },
   "keywords": [],
@@ -39,19 +44,21 @@
   "license": "ISC",
   "packageManager": "pnpm@10.11.0",
   "devDependencies": {
+    "@electron/notarize": "^3.0.1",
     "@tailwindcss/vite": "^4.1.8",
     "@vitejs/plugin-vue": "^5.2.4",
     "cross-env": "^7.0.3",
     "electron": "^36.3.2",
     "electron-builder": "^26.0.12",
     "electron-devtools-installer": "^4.0.0",
-    "@electron/notarize": "^1.2.2",
     "tailwindcss": "^4.1.8",
     "vite": "^6.3.5",
     "vite-plugin-vue-devtools": "^7.7.6",
     "wait-on": "^8.0.3"
   },
   "dependencies": {
+    "electron-log": "^5.4.0",
+    "electron-updater": "^6.6.2",
     "minisearch": "^7.1.2",
     "pinia": "^3.0.2",
     "vue": "^3.5.16"

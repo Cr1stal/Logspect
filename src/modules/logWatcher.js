@@ -1,4 +1,5 @@
 import fs from 'fs';
+import log from "electron-log";
 import { parseLogLines } from './logParser.js';
 import { addLogEntry, displayLogsByRequestId } from './logStorage.js';
 
@@ -27,7 +28,7 @@ export const stopWatching = () => {
     fs.unwatchFile(logFilePath);
     isWatching = false;
     watcher = null;
-    console.log('Stopped watching previous log file');
+    log.info('Stopped watching previous log file');
   }
 };
 
@@ -60,7 +61,7 @@ export const startWatching = async (newLogPath) => {
       interval: 500
     }, (curr, prev) => {
       if (curr.mtime > prev.mtime) {
-        console.log('File change detected...');
+        log.info('File change detected...');
         readLogFile();
       }
     });
@@ -72,7 +73,7 @@ export const startWatching = async (newLogPath) => {
       message: `Started watching log file: ${logFilePath}`
     };
   } catch (error) {
-    console.error('Error starting file watcher:', error);
+    log.error('Error starting file watcher:', error);
     return {
       success: false,
       message: `Error starting file watcher: ${error.message}`
@@ -86,7 +87,7 @@ export const startWatching = async (newLogPath) => {
  */
 export const readLogFile = async () => {
   if (!logFilePath) {
-    console.log('No log file path set. Please select a Rails project directory first.');
+    log.info('No log file path set. Please select a Rails project directory first.');
     return;
   }
 
@@ -114,11 +115,11 @@ export const readLogFile = async () => {
       });
 
       stream.on('error', (err) => {
-        console.error('Error reading log file:', err);
+        log.error('Error reading log file:', err);
       });
     }
   } catch (err) {
-    console.error('Error accessing log file:', err);
+    log.error('Error accessing log file:', err);
   }
 };
 
@@ -127,7 +128,7 @@ export const readLogFile = async () => {
  * @param {string} content - New log content to process
  */
 const processNewLogContent = (content) => {
-  console.log('=== New log entries detected ===');
+  log.info('=== New log entries detected ===');
 
   // Split by lines and process each line
   const lines = content.split('\n').filter(line => line.trim());
@@ -138,12 +139,12 @@ const processNewLogContent = (content) => {
       const result = addLogEntry(parsed.requestId, parsed.content, parsed.titleInfo);
 
       if (result.isNewRequest) {
-        console.log(`🆕 New request started: ${parsed.requestId}`);
+        log.info(`🆕 New request started: ${parsed.requestId}`);
       } else {
-        console.log(`📝 Additional entry for: ${parsed.requestId}`);
+        log.info(`📝 Additional entry for: ${parsed.requestId}`);
       }
     } else {
-      console.log(`❓ Unmatched log: ${parsed.content}`);
+      log.info(`❓ Unmatched log: ${parsed.content}`);
     }
   });
 
@@ -152,7 +153,7 @@ const processNewLogContent = (content) => {
     displayLogsByRequestId();
   }
 
-  console.log('=== End of new entries ===\n');
+  log.info('=== End of new entries ===\n');
 
   // Notify callback if set
   if (onLogDataCallback) {

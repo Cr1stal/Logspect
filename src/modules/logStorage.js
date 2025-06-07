@@ -1,3 +1,5 @@
+import log from "electron-log";
+
 /**
  * Efficient storage for grouped log entries by request ID
  */
@@ -78,7 +80,7 @@ export const clearAllLogData = () => {
     logEntriesByRequestId.clear();
     return true;
   } catch (error) {
-    console.error('Error clearing log data:', error);
+    log.error('Error clearing log data:', error);
     return false;
   }
 };
@@ -140,21 +142,21 @@ export const getRequestById = (requestId) => {
  * Displays log statistics to console (for debugging)
  */
 export const displayLogsByRequestId = () => {
-  console.log('\n=== Current Log Groups by Request ID ===');
-  console.log(`Total unique requests: ${logEntriesByRequestId.size}`);
+  log.info('\n=== Current Log Groups by Request ID ===');
+  log.info(`Total unique requests: ${logEntriesByRequestId.size}`);
 
   for (const [requestId, group] of logEntriesByRequestId) {
-    console.log(`\n📋 Request ID: ${requestId}`);
-    console.log(`   Entries: ${group.entries.length}`);
-    console.log(`   First seen: ${group.firstSeen.toISOString()}`);
-    console.log(`   Last seen: ${group.lastSeen.toISOString()}`);
-    console.log('   Recent entries:');
+    log.info(`\n📋 Request ID: ${requestId}`);
+    log.info(`   Entries: ${group.entries.length}`);
+    log.info(`   First seen: ${group.firstSeen.toISOString()}`);
+    log.info(`   Last seen: ${group.lastSeen.toISOString()}`);
+    log.info('   Recent entries:');
 
     // Show last 3 entries for this request
     const recentEntries = group.entries.slice(-3);
     recentEntries.forEach((entry, index) => {
-      console.log(`     ${index + 1}. ${entry.content}`);
+      log.info(`     ${index + 1}. ${entry.content}`);
     });
   }
-  console.log('=== End of Log Groups ===\n');
+  log.info('=== End of Log Groups ===\n');
 };

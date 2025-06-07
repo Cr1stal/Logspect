@@ -3,6 +3,8 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import pkg from "electron-updater"
+import log from "electron-log";
 import { isDev, VITE_DEV_SERVER_URL } from './devtools.js';
 import { setupIpcHandlers, setMainWindow, streamDataToRenderer } from './ipcHandlers.js';
 import { setLogDataCallback } from './logWatcher.js';
@@ -12,6 +14,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 let mainWindow = null;
+
+const { autoUpdater } = pkg;
 
 /**
  * Creates the main application window
@@ -38,7 +42,7 @@ export const createWindow = async () => {
 
   // Load app from Vite dev server in development, or from built files in production
   if (isDev) {
-      console.log('Development mode: Loading from Vite dev server...');
+      log.info('Development mode: Loading from Vite dev server...');
       await win.loadURL(VITE_DEV_SERVER_URL);
 
       // Open DevTools in development
@@ -66,8 +70,13 @@ export const createWindow = async () => {
  * Initializes the Electron application
  */
 export const initializeApp = () => {
+  log.initialize();
+
   // Set up IPC handlers before creating window
   setupIpcHandlers();
+
+  autoUpdater.logger = log
+  autoUpdater.logger.transports.file.level = "debug"
 
   app.whenReady().then(() => {
     createWindow();
@@ -77,6 +86,10 @@ export const initializeApp = () => {
         createWindow();
       }
     });
+
+    // Set up auto-updater
+    autoUpdater.checkForUpdatesAndNotify();
+
   });
 
   app.on('window-all-closed', () => {
