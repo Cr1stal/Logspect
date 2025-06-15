@@ -11,18 +11,29 @@ export const uuidRegex = /^\[([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a
 export const jidRegex = /class=([^\s]+)\s+jid=([a-f0-9]+)/;
 
 /**
+ * Generates a time-based UUID that groups logs by second
+ * @returns {string} Time-based UUID
+ */
+const generateTimeBasedUuid = () => {
+  const now = new Date();
+  const timestamp = Math.floor(now.getTime() / 5000); // Truncate to 5 seconds
+  // Create a consistent UUID for the same second
+  return `sys-${timestamp}`;
+};
+
+/**
  * Extracts log information including type, subType, success, metadata and title
  * @param {string} content - The log line content
  * @returns {{type: string, subType: string, success: boolean|null, metadata: object, title: string}}
  */
 export const extractLogInfo = (content) => {
-  // Default structure
+  // Default structure for system logs
   let logInfo = {
-    type: 'unknown',
-    subType: 'unknown',
+    type: 'app',
+    subType: 'sys',
     success: null,
     metadata: {},
-    title: 'Unknown Entry'
+    title: 'System Log'
   };
 
   // Pattern 1: Background job logs (check first since they have a specific format)
@@ -86,6 +97,24 @@ export const extractLogInfo = (content) => {
     return logInfo;
   }
 
+  // Everything else is a system log - extract meaningful title
+  const words = content.trim().split(/\s+/).filter(word =>
+    word.length > 2 && !word.match(/^\[|\]$|^\d+$|^(INFO|DEBUG|WARN|ERROR|FATAL)$/i)
+  );
+
+  if (words.length > 0) {
+    logInfo.title = words.slice(0, 4).join(' ');
+    if (logInfo.title.length > 50) {
+      logInfo.title = logInfo.title.substring(0, 50) + '...';
+    }
+  }
+
+  // Determine success status for system logs
+  const levelMatch = content.match(/(INFO|DEBUG|WARN|ERROR|FATAL)/i);
+  if (levelMatch) {
+    logInfo.success = !['ERROR', 'FATAL'].includes(levelMatch[1].toUpperCase());
+  }
+
   return logInfo;
 };
 
@@ -126,9 +155,25 @@ export const parseLogLine = (logLine) => {
     };
   }
 
+  // For all other logs (system logs), generate a time-based UUID
+  const content = logLine.trim();
+  const logInfo = extractLogInfo(content);
+
+  // Only generate time-based UUID for system logs
+  if (logInfo.type === 'app' && logInfo.subType === 'sys') {
+    const timeBasedUuid = generateTimeBasedUuid();
+
+    return {
+      uuid: timeBasedUuid,
+      content: util.stripVTControlCharacters(content),
+      isNewEntry: false, // Will be determined by storage layer
+      logInfo: logInfo
+    };
+  }
+
   return {
     uuid: null,
-    content: logLine.trim(),
+    content: content,
     isNewEntry: false
   };
 };
