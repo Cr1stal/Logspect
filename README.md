@@ -1,6 +1,6 @@
 # Logspect - Log Management Solution
 
-A powerful Electron-based log management application built with Vue.js and Vite.
+A powerful Electron-based log viewer application for Ruby on Rails projects. It aims to become the dev tool for log related debugging and unlock productivity.
 
 ## Features
 
