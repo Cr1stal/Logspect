@@ -5,8 +5,8 @@
       :hasProject="logStore.hasProject"
       :projectDirectory="logStore.projectDirectory"
       :isWatching="logStore.isWatching"
-      :totalRequests="logStore.logData.totalRequests"
-      :totalEntries="logStore.totalEntries"
+      :totalRequests="logStore.logData.totalEntries"
+      :totalEntries="logStore.totalLogEntries"
       :autoScroll="logStore.autoScroll"
       :isRefreshing="logStore.isRefreshing"
       @select-project="logStore.selectProject"
@@ -25,16 +25,16 @@
 
       <!-- Console Interface -->
       <div v-else class="console-interface">
-        <RequestList
-          :requests="logStore.logData.requests"
-          :totalRequests="logStore.logData.totalRequests"
-          :selectedRequestId="logStore.selectedRequestId"
-          @select-request="logStore.selectRequest"
+        <EntryList
+          :entries="logStore.logData.entries"
+          :totalEntries="logStore.logData.totalEntries"
+          :selectedUuid="logStore.selectedUuid"
+          @select-entry="logStore.selectEntry"
         />
 
-        <RequestDetails
-          :selectedRequestId="logStore.selectedRequestId"
-          :selectedRequest="logStore.selectedRequest"
+        <EntryDetails
+          :selectedUuid="logStore.selectedUuid"
+          :selectedEntry="logStore.selectedEntry"
           :autoScroll="logStore.autoScroll"
         />
       </div>
@@ -46,16 +46,16 @@
 import { useLogStore } from '../stores/logStore.js'
 import WelcomeScreen from './WelcomeScreen.vue'
 import Toolbar from './Toolbar.vue'
-import RequestList from './RequestList.vue'
-import RequestDetails from './RequestDetails.vue'
+import EntryList from './EntryList.vue'
+import EntryDetails from './EntryDetails.vue'
 
 export default {
   name: 'LogViewer',
   components: {
     WelcomeScreen,
     Toolbar,
-    RequestList,
-    RequestDetails
+    EntryList,
+    EntryDetails
   },
   setup() {
     const logStore = useLogStore()

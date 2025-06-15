@@ -1,27 +1,48 @@
 import util from 'util'
 
 /**
- * Regex to extract request ID from log lines like [aa32797f-b087-4d45-9d99-28198952a784]
+ * Regex to extract UUID from log lines like [aa32797f-b087-4d45-9d99-28198952a784]
  */
-export const requestIdRegex = /^\[([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\]/;
+export const uuidRegex = /^\[([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\]/;
 
 /**
- * Extracts meaningful title and metadata from log content
+ * Extracts log information including type, subType, success, metadata and title
  * @param {string} content - The log line content
- * @returns {{method: string, path: string, title: string}}
+ * @returns {{type: string, subType: string, success: boolean|null, metadata: object, title: string}}
  */
-export const extractRequestTitle = (content) => {
-  // Try to extract HTTP method and path from various log formats
+export const extractLogInfo = (content) => {
+  // Default structure
+  let logInfo = {
+    type: 'unknown',
+    subType: 'unknown',
+    success: null,
+    metadata: {},
+    title: 'Unknown Entry'
+  };
 
-  // Pattern 1: Standard HTTP request log like "GET /dashboard/overview"
+  // Pattern 1: Web requests - HTTP method and path like "GET /dashboard/overview"
   const httpPattern = /(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+([^\s]+)/i;
   const httpMatch = content.match(httpPattern);
   if (httpMatch) {
-    return {
-      method: httpMatch[1].toUpperCase(),
-      path: httpMatch[2],
-      title: `${httpMatch[1].toUpperCase()} ${httpMatch[2]}`
-    };
+    logInfo.type = 'web';
+    logInfo.subType = httpMatch[1].toUpperCase();
+    logInfo.title = `${httpMatch[1].toUpperCase()} ${httpMatch[2]}`;
+    logInfo.metadata.path = httpMatch[2];
+
+    // Try to extract status code and response time
+    const statusMatch = content.match(/(\d{3})\s+\w+/);
+    if (statusMatch) {
+      const statusCode = parseInt(statusMatch[1]);
+      logInfo.success = statusCode >= 200 && statusCode < 400;
+      logInfo.metadata.statusCode = statusCode;
+    }
+
+    const responseTimeMatch = content.match(/(\d+(?:\.\d+)?)\s*ms/);
+    if (responseTimeMatch) {
+      logInfo.metadata.responseTime = parseFloat(responseTimeMatch[1]);
+    }
+
+    return logInfo;
   }
 
   // Pattern 2: Rails controller format like "app/controllers/dashboard/overviews_controller.rb:17:in `show'"
@@ -31,11 +52,15 @@ export const extractRequestTitle = (content) => {
     const namespace = controllerMatch[1];
     const controller = controllerMatch[2];
     const action = controllerMatch[3];
-    return {
-      method: 'RAILS',
-      path: `/${namespace}/${controller}#${action}`,
-      title: `${namespace}/${controller}#${action}`
-    };
+
+    logInfo.type = 'web';
+    logInfo.subType = 'RAILS';
+    logInfo.title = `${namespace}/${controller}#${action}`;
+    logInfo.metadata.namespace = namespace;
+    logInfo.metadata.controller = controller;
+    logInfo.metadata.action = action;
+
+    return logInfo;
   }
 
   // Pattern 3: Simple controller format like "DashboardController#show"
@@ -44,88 +69,160 @@ export const extractRequestTitle = (content) => {
   if (simpleControllerMatch) {
     const controller = simpleControllerMatch[1].toLowerCase();
     const action = simpleControllerMatch[2];
-    return {
-      method: 'RAILS',
-      path: `/${controller}#${action}`,
-      title: `${controller}#${action}`
-    };
+
+    logInfo.type = 'web';
+    logInfo.subType = 'RAILS';
+    logInfo.title = `${controller}#${action}`;
+    logInfo.metadata.controller = controller;
+    logInfo.metadata.action = action;
+
+    return logInfo;
   }
 
-  // Pattern 4: API endpoint format like "/api/v1/users"
+  // Pattern 4: Background job patterns
+  const jobPatterns = [
+    /(\w+Job)\s+/,
+    /Performing\s+(\w+Job)/i,
+    /Enqueued\s+(\w+Job)/i,
+    /Job\s+(\w+)/i
+  ];
+
+  for (const pattern of jobPatterns) {
+    const jobMatch = content.match(pattern);
+    if (jobMatch) {
+      logInfo.type = 'worker';
+      logInfo.subType = 'job';
+      logInfo.title = jobMatch[1];
+      logInfo.metadata.jobClass = jobMatch[1];
+
+      // Try to extract job success/failure
+      if (content.toLowerCase().includes('completed') || content.toLowerCase().includes('success')) {
+        logInfo.success = true;
+      } else if (content.toLowerCase().includes('failed') || content.toLowerCase().includes('error')) {
+        logInfo.success = false;
+      }
+
+      // Try to extract duration
+      const durationMatch = content.match(/(?:in|took)\s+(\d+(?:\.\d+)?)\s*(?:ms|seconds?)/i);
+      if (durationMatch) {
+        logInfo.metadata.duration = parseFloat(durationMatch[1]);
+      }
+
+      return logInfo;
+    }
+  }
+
+  // Pattern 5: System/Application logs
+  const systemPatterns = [
+    /(?:INFO|DEBUG|WARN|ERROR|FATAL)/i,
+    /Starting\s+/i,
+    /Stopping\s+/i,
+    /Loading\s+/i,
+    /Initializing\s+/i,
+    /Configuration\s+/i
+  ];
+
+  for (const pattern of systemPatterns) {
+    if (content.match(pattern)) {
+      logInfo.type = 'app';
+      logInfo.subType = 'sys';
+
+      // Extract log level
+      const levelMatch = content.match(/(INFO|DEBUG|WARN|ERROR|FATAL)/i);
+      if (levelMatch) {
+        logInfo.metadata.level = levelMatch[1].toUpperCase();
+        logInfo.success = !['ERROR', 'FATAL'].includes(levelMatch[1].toUpperCase());
+      }
+
+      // Use first meaningful part as title
+      const words = content.trim().split(/\s+/).filter(word =>
+        word.length > 2 && !word.match(/^\[|\]$|^\d+$|^(INFO|DEBUG|WARN|ERROR|FATAL)$/i)
+      );
+
+      if (words.length > 0) {
+        logInfo.title = words.slice(0, 4).join(' ');
+        if (logInfo.title.length > 40) {
+          logInfo.title = logInfo.title.substring(0, 40) + '...';
+        }
+      }
+
+      return logInfo;
+    }
+  }
+
+  // Pattern 6: API endpoint format like "/api/v1/users"
   const apiPattern = /\/api\/[^\s]+/;
   const apiMatch = content.match(apiPattern);
   if (apiMatch) {
-    return {
-      method: 'API',
-      path: apiMatch[0],
-      title: apiMatch[0]
-    };
+    logInfo.type = 'web';
+    logInfo.subType = 'API';
+    logInfo.title = apiMatch[0];
+    logInfo.metadata.endpoint = apiMatch[0];
+
+    return logInfo;
   }
 
-  // Pattern 5: Generic path format
+  // Pattern 7: Generic path format
   const pathPattern = /\/[^\s]+/;
   const pathMatch = content.match(pathPattern);
   if (pathMatch) {
-    return {
-      method: 'WEB',
-      path: pathMatch[0],
-      title: pathMatch[0]
-    };
+    logInfo.type = 'web';
+    logInfo.subType = 'WEB';
+    logInfo.title = pathMatch[0];
+    logInfo.metadata.path = pathMatch[0];
+
+    return logInfo;
   }
 
-  // Pattern 6: Extract first meaningful word/phrase (fallback)
+  // Fallback: Extract first meaningful words
   const words = content.trim().split(/\s+/).filter(word =>
     word.length > 2 && !word.match(/^\[|\]$|^\d+$/)
   );
 
   if (words.length > 0) {
-    const title = words.slice(0, 3).join(' ');
-    return {
-      method: 'LOG',
-      path: title,
-      title: title.length > 30 ? title.substring(0, 30) + '...' : title
-    };
+    logInfo.type = 'app';
+    logInfo.subType = 'log';
+    logInfo.title = words.slice(0, 3).join(' ');
+    if (logInfo.title.length > 30) {
+      logInfo.title = logInfo.title.substring(0, 30) + '...';
+    }
   }
 
-  return {
-    method: 'UNKNOWN',
-    path: 'Unknown Request',
-    title: 'Unknown Request'
-  };
+  return logInfo;
 };
 
 /**
- * Parses a single log line and extracts request information
+ * Parses a single log line and extracts information
  * @param {string} logLine - The log line to parse
- * @returns {{requestId: string|null, content: string, isNewRequest: boolean, titleInfo?: object}}
+ * @returns {{uuid: string|null, content: string, isNewEntry: boolean, logInfo?: object}}
  */
 export const parseLogLine = (logLine) => {
-  const match = logLine.match(requestIdRegex);
+  const match = logLine.match(uuidRegex);
 
   if (match) {
-    const requestId = match[1];
-    const content = logLine.replace(requestIdRegex, '').trim();
-    const titleInfo = extractRequestTitle(content);
+    const uuid = match[1];
+    const content = logLine.replace(uuidRegex, '').trim();
+    const logInfo = extractLogInfo(content);
 
     return {
-      requestId: requestId,
+      uuid: uuid,
       content: util.stripVTControlCharacters(content),
-      isNewRequest: false, // Will be determined by storage layer
-      titleInfo: titleInfo
+      isNewEntry: false, // Will be determined by storage layer
+      logInfo: logInfo
     };
   }
 
   return {
-    requestId: null,
+    uuid: null,
     content: logLine.trim(),
-    isNewRequest: false
+    isNewEntry: false
   };
 };
 
 /**
  * Processes multiple log lines and returns parsed entries
  * @param {string[]} lines - Array of log lines to process
- * @returns {Array<{requestId: string|null, content: string, titleInfo?: object}>}
+ * @returns {Array<{uuid: string|null, content: string, logInfo?: object}>}
  */
 export const parseLogLines = (lines) => {
   return lines
@@ -134,11 +231,11 @@ export const parseLogLines = (lines) => {
 };
 
 /**
- * Validates if a string looks like a valid request ID
- * @param {string} requestId - The request ID to validate
+ * Validates if a string looks like a valid UUID
+ * @param {string} uuid - The UUID to validate
  * @returns {boolean}
  */
-export const isValidRequestId = (requestId) => {
-  if (!requestId || typeof requestId !== 'string') return false;
-  return /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(requestId);
+export const isValidUuid = (uuid) => {
+  if (!uuid || typeof uuid !== 'string') return false;
+  return /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(uuid);
 };
