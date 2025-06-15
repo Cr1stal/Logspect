@@ -6,6 +6,11 @@ import util from 'util'
 export const uuidRegex = /^\[([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\]/;
 
 /**
+ * Regex to extract jid from background job logs like "class=Workers::Database::RefreshMaterializedView jid=73f8e97e7e79413a3006f4ea"
+ */
+export const jidRegex = /class=([^\s]+)\s+jid=([a-f0-9]+)/;
+
+/**
  * Extracts log information including type, subType, success, metadata and title
  * @param {string} content - The log line content
  * @returns {{type: string, subType: string, success: boolean|null, metadata: object, title: string}}
@@ -20,7 +25,43 @@ export const extractLogInfo = (content) => {
     title: 'Unknown Entry'
   };
 
-  // Pattern 1: Web requests - HTTP method and path like "GET /dashboard/overview"
+  // Pattern 1: Background job logs (check first since they have a specific format)
+  const jidMatch = content.match(jidRegex);
+  if (jidMatch) {
+    const jobClass = jidMatch[1];
+    const jid = jidMatch[2];
+
+    logInfo.type = 'worker';
+    logInfo.subType = 'job';
+    logInfo.title = jobClass.split('::').pop(); // Get the last part of the class name
+    logInfo.metadata.jobClass = jobClass;
+    logInfo.metadata.jid = jid;
+
+    // Extract elapsed time from "done" messages
+    const elapsedMatch = content.match(/elapsed=([\d.]+)/);
+    if (elapsedMatch) {
+      logInfo.metadata.elapsed = parseFloat(elapsedMatch[1]);
+    }
+
+    // Determine success status
+    if (content.includes('INFO: done')) {
+      logInfo.success = true;
+    } else if (content.includes('ERROR:') || content.includes('FATAL:')) {
+      logInfo.success = false;
+    } else if (content.includes('INFO: start')) {
+      logInfo.success = null; // Job started, outcome unknown
+    }
+
+    // Extract database timing from DEBUG messages
+    const dbTimingMatch = content.match(/\(([0-9.]+)ms\)/);
+    if (dbTimingMatch) {
+      logInfo.metadata.dbTiming = parseFloat(dbTimingMatch[1]);
+    }
+
+    return logInfo;
+  }
+
+  // Pattern 2: Web requests - HTTP method and path like "GET /dashboard/overview"
   const httpPattern = /(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+([^\s]+)/i;
   const httpMatch = content.match(httpPattern);
   if (httpMatch) {
@@ -45,7 +86,7 @@ export const extractLogInfo = (content) => {
     return logInfo;
   }
 
-  // Pattern 2: Rails controller format like "app/controllers/dashboard/overviews_controller.rb:17:in `show'"
+  // Pattern 3: Rails controller format like "app/controllers/dashboard/overviews_controller.rb:17:in `show'"
   const controllerPattern = /app\/controllers\/([^\/]+)\/([^\/]+)_controller\.rb.*?`(\w+)'/;
   const controllerMatch = content.match(controllerPattern);
   if (controllerMatch) {
@@ -63,7 +104,7 @@ export const extractLogInfo = (content) => {
     return logInfo;
   }
 
-  // Pattern 3: Simple controller format like "DashboardController#show"
+  // Pattern 4: Simple controller format like "DashboardController#show"
   const simpleControllerPattern = /(\w+)Controller#(\w+)/;
   const simpleControllerMatch = content.match(simpleControllerPattern);
   if (simpleControllerMatch) {
@@ -79,7 +120,7 @@ export const extractLogInfo = (content) => {
     return logInfo;
   }
 
-  // Pattern 4: Background job patterns
+  // Pattern 5: Generic background job patterns (fallback for other job formats)
   const jobPatterns = [
     /(\w+Job)\s+/,
     /Performing\s+(\w+Job)/i,
@@ -112,7 +153,7 @@ export const extractLogInfo = (content) => {
     }
   }
 
-  // Pattern 5: System/Application logs
+  // Pattern 6: System/Application logs
   const systemPatterns = [
     /(?:INFO|DEBUG|WARN|ERROR|FATAL)/i,
     /Starting\s+/i,
@@ -127,10 +168,9 @@ export const extractLogInfo = (content) => {
       logInfo.type = 'app';
       logInfo.subType = 'sys';
 
-      // Extract log level
+      // Extract log level for success determination
       const levelMatch = content.match(/(INFO|DEBUG|WARN|ERROR|FATAL)/i);
       if (levelMatch) {
-        logInfo.metadata.level = levelMatch[1].toUpperCase();
         logInfo.success = !['ERROR', 'FATAL'].includes(levelMatch[1].toUpperCase());
       }
 
@@ -150,7 +190,7 @@ export const extractLogInfo = (content) => {
     }
   }
 
-  // Pattern 6: API endpoint format like "/api/v1/users"
+  // Pattern 7: API endpoint format like "/api/v1/users"
   const apiPattern = /\/api\/[^\s]+/;
   const apiMatch = content.match(apiPattern);
   if (apiMatch) {
@@ -162,7 +202,7 @@ export const extractLogInfo = (content) => {
     return logInfo;
   }
 
-  // Pattern 7: Generic path format
+  // Pattern 8: Generic path format
   const pathPattern = /\/[^\s]+/;
   const pathMatch = content.match(pathPattern);
   if (pathMatch) {
@@ -197,15 +237,31 @@ export const extractLogInfo = (content) => {
  * @returns {{uuid: string|null, content: string, isNewEntry: boolean, logInfo?: object}}
  */
 export const parseLogLine = (logLine) => {
-  const match = logLine.match(uuidRegex);
-
-  if (match) {
-    const uuid = match[1];
+  // First try to match UUID format [uuid]
+  const uuidMatch = logLine.match(uuidRegex);
+  if (uuidMatch) {
+    const uuid = uuidMatch[1];
     const content = logLine.replace(uuidRegex, '').trim();
     const logInfo = extractLogInfo(content);
 
     return {
       uuid: uuid,
+      content: util.stripVTControlCharacters(content),
+      isNewEntry: false, // Will be determined by storage layer
+      logInfo: logInfo
+    };
+  }
+
+  // Then try to match background job format with jid
+  const jidMatch = logLine.match(jidRegex);
+  console.log('jidMatch', jidMatch, logLine);
+  if (jidMatch) {
+    const jid = jidMatch[2]; // Use jid as uuid
+    const content = logLine.trim();
+    const logInfo = extractLogInfo(content);
+
+    return {
+      uuid: jid,
       content: util.stripVTControlCharacters(content),
       isNewEntry: false, // Will be determined by storage layer
       logInfo: logInfo
@@ -238,4 +294,14 @@ export const parseLogLines = (lines) => {
 export const isValidUuid = (uuid) => {
   if (!uuid || typeof uuid !== 'string') return false;
   return /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(uuid);
+};
+
+/**
+ * Validates if a string looks like a valid job ID (jid)
+ * @param {string} jid - The job ID to validate
+ * @returns {boolean}
+ */
+export const isValidJid = (jid) => {
+  if (!jid || typeof jid !== 'string') return false;
+  return /^[a-f0-9]{24}$/.test(jid); // Sidekiq jids are typically 24 hex characters
 };

@@ -104,6 +104,7 @@ export const readLogFile = async () => {
 
       let newContent = '';
       stream.on('data', (chunk) => {
+        console.log('chunk', chunk);
         newContent += chunk;
       });
 

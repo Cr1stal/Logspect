@@ -47,9 +47,7 @@
             <span v-if="entry.metadata.statusCode" class="metadata-item">
               {{ entry.metadata.statusCode }}
             </span>
-            <span v-if="entry.metadata.level" class="metadata-item">
-              {{ entry.metadata.level }}
-            </span>
+
             <span v-if="entry.metadata.duration" class="metadata-item">
               {{ entry.metadata.duration }}{{ entry.metadata.duration < 10 ? 's' : 'ms' }}
             </span>
