@@ -1,0 +1,70 @@
+<svg width="200" height="200" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Background gradient -->
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1E293B;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0F172A;stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Document gradient -->
+    <linearGradient id="docGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#FFFFFF;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#F1F5F9;stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Magnifier gradient -->
+    <linearGradient id="magGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0EA5E9;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0284C7;stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Glass effect -->
+    <radialGradient id="glassEffect" cx="30%" cy="30%">
+      <stop offset="0%" style="stop-color:#FFFFFF;stop-opacity:0.6" />
+      <stop offset="70%" style="stop-color:#FFFFFF;stop-opacity:0.1" />
+      <stop offset="100%" style="stop-color:#FFFFFF;stop-opacity:0" />
+    </radialGradient>
+    
+    <!-- Shadow -->
+    <filter id="shadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="4"/>
+      <feOffset dx="0" dy="2" result="offset"/>
+      <feFlood flood-color="#000000" flood-opacity="0.2"/>
+      <feComposite in2="offset" operator="in"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <!-- Background -->
+  <rect width="200" height="200" fill="url(#bgGradient)" rx="25"/>
+  
+  <!-- Document -->
+  <rect x="30" y="40" width="100" height="120" rx="6" fill="url(#docGradient)" stroke="#E2E8F0" stroke-width="1" filter="url(#shadow)"/>
+  
+  <!-- Log lines -->
+  <rect x="40" y="60" width="80" height="3" rx="1.5" fill="#22C55E"/>
+  <rect x="40" y="70" width="70" height="3" rx="1.5" fill="#22C55E"/>
+  <rect x="40" y="80" width="75" height="3" rx="1.5" fill="#F59E0B"/>
+  <rect x="40" y="90" width="60" height="3" rx="1.5" fill="#22C55E"/>
+  <rect x="40" y="100" width="85" height="3" rx="1.5" fill="#EF4444"/>
+  <rect x="40" y="110" width="50" height="3" rx="1.5" fill="#22C55E"/>
+  <rect x="40" y="120" width="65" height="3" rx="1.5" fill="#F59E0B"/>
+  <rect x="40" y="130" width="80" height="3" rx="1.5" fill="#22C55E"/>
+  <rect x="40" y="140" width="45" height="3" rx="1.5" fill="#EF4444"/>
+  
+  <!-- Magnifying glass -->
+  <circle cx="120" cy="120" r="35" fill="none" stroke="url(#magGradient)" stroke-width="6" filter="url(#shadow)"/>
+  <circle cx="120" cy="120" r="30" fill="url(#glassEffect)"/>
+  
+  <!-- Handle -->
+  <line x1="145" y1="145" x2="170" y2="170" stroke="url(#magGradient)" stroke-width="6" stroke-linecap="round" filter="url(#shadow)"/>
+  
+  <!-- Glass highlight -->
+  <ellipse cx="105" cy="105" rx="12" ry="8" fill="#FFFFFF" opacity="0.8" transform="rotate(-45 105 105)"/>
+  
+  <!-- Magnified area effect -->
+  <rect x="105" y="115" width="30" height="2" rx="1" fill="#EF4444" opacity="0.8"/>
+</svg>

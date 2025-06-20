@@ -23,7 +23,7 @@ let lastAppSystemLogUuid = null;
 const generateTimeBasedUuid = () => {
   const now = new Date();
   const currentTime = now.getTime();
-  
+
   // If this is the first app system log, or more than 2 seconds have passed since the last one,
   // create a new group
   if (!lastAppSystemLogTime || (currentTime - lastAppSystemLogTime) > 2000) {
@@ -31,10 +31,10 @@ const generateTimeBasedUuid = () => {
     lastAppSystemLogUuid = `sys-${currentTime}`;
     return lastAppSystemLogUuid;
   }
-  
+
   // Update the last seen time for the current group
   lastAppSystemLogTime = currentTime;
-  
+
   // Return the existing group UUID
   return lastAppSystemLogUuid;
 };
@@ -159,7 +159,6 @@ export const parseLogLine = (logLine) => {
 
   // Then try to match background job format with jid
   const jidMatch = logLine.match(jidRegex);
-  console.log('jidMatch', jidMatch, logLine);
   if (jidMatch) {
     const jid = jidMatch[2]; // Use jid as uuid
     const content = logLine.trim();
