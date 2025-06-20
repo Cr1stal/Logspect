@@ -31,6 +31,7 @@
         <div class="search-input-wrapper">
           <Search :size="14" class="search-icon" />
           <input
+            ref="searchInput"
             type="text"
             class="search-input"
             placeholder="Filter"
@@ -162,6 +163,14 @@ export default {
     projectName() {
       if (!this.projectDirectory) return 'Project Name';
       return this.projectDirectory.split('/').pop() || 'Project Name';
+    }
+  },
+  methods: {
+    focusSearchInput() {
+      if (this.$refs.searchInput && this.hasProject) {
+        this.$refs.searchInput.focus();
+        this.$refs.searchInput.select();
+      }
     }
   },
   emits: ['select-project', 'refresh', 'clear', 'toggle-auto-scroll', 'toggle-watching', 'update-search', 'toggle-invert', 'toggle-category']

@@ -2,6 +2,7 @@
   <div class="log-viewer">
     <!-- Toolbar -->
     <Toolbar
+      ref="toolbar"
       :hasProject="logStore.hasProject"
       :projectDirectory="logStore.projectDirectory"
       :isWatching="logStore.isWatching"
@@ -116,12 +117,28 @@ export default {
           this.activeCategories.push(category);
         }
       }
+    },
+    handleKeydown(event) {
+      // Handle Cmd+F (Mac) or Ctrl+F (Windows/Linux)
+      if ((event.metaKey || event.ctrlKey) && event.key === 'f') {
+        event.preventDefault();
+        if (this.$refs.toolbar && this.logStore.hasProject) {
+          this.$refs.toolbar.focusSearchInput();
+        }
+      }
     }
   },
   async mounted() {
     // Load project info and set up listeners
     await this.logStore.loadProjectInfo()
     this.logStore.setupLogListener()
+
+    // Add keyboard event listener
+    document.addEventListener('keydown', this.handleKeydown)
+  },
+  beforeUnmount() {
+    // Clean up keyboard event listener
+    document.removeEventListener('keydown', this.handleKeydown)
   }
 }
 </script>
