@@ -102,6 +102,48 @@ export const setupIpcHandlers = () => {
     }
   });
 
+  // Handler for selecting a recent project
+  ipcMain.handle('select-recent-project', async (event, projectPath) => {
+    try {
+      // Prepare and validate the project
+      const projectResult = await prepareProject(projectPath);
+
+      if (projectResult.success) {
+        projectDirectory = projectResult.projectPath;
+
+        // Start watching the log file
+        const watchResult = await startWatching(projectResult.logPath);
+
+        if (watchResult.success) {
+          // Notify renderer about the new project
+          notifyProjectSelected(projectDirectory, projectResult.logPath, true);
+
+          return {
+            success: true,
+            message: projectResult.message,
+            projectDir: projectResult.projectPath,
+            logFilePath: projectResult.logPath,
+            logFileExists: true,
+            hasRailsGem: projectResult.hasRailsGem
+          };
+        } else {
+          return {
+            success: false,
+            message: watchResult.message
+          };
+        }
+      } else {
+        return projectResult;
+      }
+    } catch (error) {
+      console.error('Error selecting recent project:', error);
+      return {
+        success: false,
+        message: `Error: ${error.message}`
+      };
+    }
+  });
+
   // Handler to get current project info
   ipcMain.handle('get-project-info', () => {
     const watchingStatus = getWatchingStatus();

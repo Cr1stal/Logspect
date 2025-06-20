@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.removeAllListeners('log-data-update');
   },
   selectDirectory: () => ipcRenderer.invoke('select-directory'),
+  selectRecentProject: (projectPath) => ipcRenderer.invoke('select-recent-project', projectPath),
   getProjectInfo: () => ipcRenderer.invoke('get-project-info'),
   onProjectSelected: (callback) => {
     ipcRenderer.on('project-selected', (event, data) => callback(data));

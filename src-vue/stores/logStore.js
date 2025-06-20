@@ -123,11 +123,33 @@ export const useLogStore = defineStore('log', {
           this.projectDirectory = result.projectDir;
           this.isWatching = true;
           await this.refreshLogs();
+          return result.projectDir; // Return the selected path
         } else {
           console.error('Failed to select project:', result.message);
+          return null;
         }
       } catch (error) {
         console.error('Error selecting project:', error);
+        return null;
+      }
+    },
+
+    async selectRecentProject(projectPath) {
+      try {
+        const result = await window.electronAPI.selectRecentProject(projectPath);
+        if (result.success) {
+          this.hasProject = true;
+          this.projectDirectory = result.projectDir;
+          this.isWatching = true;
+          await this.refreshLogs();
+          return true;
+        } else {
+          console.error('Failed to select recent project:', result.message);
+          return false;
+        }
+      } catch (error) {
+        console.error('Error selecting recent project:', error);
+        return false;
       }
     },
 
