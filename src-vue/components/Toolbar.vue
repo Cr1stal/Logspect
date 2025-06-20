@@ -1,41 +1,111 @@
 <template>
   <div class="toolbar">
     <div class="toolbar-left">
-      <div class="toolbar-title">🚀 Logspect - Developer Console</div>
-      <div class="project-info">
-        <span v-if="!hasProject" class="project-status">No project selected</span>
-        <template v-else>
-          <span class="project-status connected">📁 {{ projectName }}</span>
-          <span class="project-path" :title="projectDirectory">{{ projectDirectory }}</span>
-        </template>
+      <div class="toolbar-title">{{ projectName }} - Logspect</div>
+    </div>
+
+    <div class="toolbar-center">
+      <!-- Pause/Unpause Button -->
+      <button
+        v-if="hasProject"
+        :class="['pause-btn', { 'paused': !isWatching }]"
+        @click="$emit('toggle-watching')"
+        :title="isWatching ? 'Pause log watching' : 'Resume log watching'"
+      >
+        <Pause v-if="isWatching" :size="16" />
+        <Play v-else :size="16" />
+      </button>
+
+      <!-- Clear Button -->
+      <button
+        v-if="hasProject"
+        class="clear-btn"
+        @click="$emit('clear')"
+        title="Clear all logs"
+      >
+        <Trash2 :size="16" />
+      </button>
+
+      <!-- Search/Filter Input -->
+      <div v-if="hasProject" class="search-container">
+        <div class="search-input-wrapper">
+          <Search :size="14" class="search-icon" />
+          <input
+            type="text"
+            class="search-input"
+            placeholder="Filter"
+            :value="searchTerm"
+            @input="$emit('update-search', $event.target.value)"
+          >
+        </div>
       </div>
-      <div v-if="hasProject" class="toolbar-stats">
-        <span>Requests: <span>{{ totalRequests }}</span></span>
-        <span>Entries: <span>{{ totalEntries }}</span></span>
+
+      <!-- Invert Toggle -->
+      <div v-if="hasProject" class="invert-container">
+        <label class="invert-checkbox">
+          <input
+            type="checkbox"
+            :checked="invertOrder"
+            @change="$emit('toggle-invert', $event.target.checked)"
+          >
+          <span class="checkmark">
+            <Check v-if="invertOrder" :size="12" />
+          </span>
+          <span class="label-text">Invert</span>
+        </label>
+      </div>
+
+      <!-- Category Filters -->
+      <div v-if="hasProject" class="category-filters">
+        <button
+          v-for="category in categories"
+          :key="category.value"
+          :class="['category-btn', { 'active': activeCategories.includes(category.value) }]"
+          @click="$emit('toggle-category', category.value)"
+        >
+          <component :is="category.icon" :size="14" />
+          {{ category.label }}
+        </button>
       </div>
     </div>
+
     <div class="toolbar-right">
       <button class="toolbar-btn" @click="$emit('select-project')">
-        {{ hasProject ? '📁 Change Project' : '📁 Select Project' }}
+        <FolderOpen :size="14" />
+        Change project
       </button>
-      <button v-if="hasProject" class="toolbar-btn" @click="$emit('refresh')" :disabled="isRefreshing">
-        <span :class="{ 'spinning': isRefreshing }">⟲</span> Refresh
-      </button>
-      <button v-if="hasProject" class="toolbar-btn" @click="$emit('clear')">🗑 Clear</button>
-      <button v-if="hasProject" :class="['toolbar-btn', { 'active': autoScroll }]" @click="$emit('toggle-auto-scroll')">
-        {{ autoScroll ? '📜 Auto Scroll' : '⏸️ Manual' }}
-      </button>
-      <div v-if="hasProject && isWatching" class="status-indicator">
-        <div class="status-dot"></div>
-        <span>Live</span>
-      </div>
     </div>
   </div>
 </template>
 
 <script>
+import {
+  Pause,
+  Play,
+  Trash2,
+  Search,
+  Check,
+  FolderOpen,
+  Globe,
+  Smartphone,
+  Cog,
+  MoreHorizontal
+} from 'lucide-vue-next'
+
 export default {
   name: 'Toolbar',
+  components: {
+    Pause,
+    Play,
+    Trash2,
+    Search,
+    Check,
+    FolderOpen,
+    Globe,
+    Smartphone,
+    Cog,
+    MoreHorizontal
+  },
   props: {
     hasProject: {
       type: Boolean,
@@ -64,75 +134,128 @@ export default {
     isRefreshing: {
       type: Boolean,
       default: false
+    },
+    searchTerm: {
+      type: String,
+      default: ''
+    },
+    invertOrder: {
+      type: Boolean,
+      default: false
+    },
+    activeCategories: {
+      type: Array,
+      default: () => ['all']
+    }
+  },
+  data() {
+    return {
+      categories: [
+        { label: 'All', value: 'all', icon: 'MoreHorizontal' },
+        { label: 'Web', value: 'web', icon: 'Globe' },
+        { label: 'App', value: 'app', icon: 'Smartphone' },
+        { label: 'Worker', value: 'worker', icon: 'Cog' }
+      ]
     }
   },
   computed: {
     projectName() {
-      if (!this.projectDirectory) return '';
-      return this.projectDirectory.split('/').pop() || 'Unknown Project';
+      if (!this.projectDirectory) return 'Project Name';
+      return this.projectDirectory.split('/').pop() || 'Project Name';
     }
   },
-  emits: ['select-project', 'refresh', 'clear', 'toggle-auto-scroll']
+  emits: ['select-project', 'refresh', 'clear', 'toggle-auto-scroll', 'toggle-watching', 'update-search', 'toggle-invert', 'toggle-category']
 }
 </script>
 
 <style scoped>
 @reference "../style.css";
-@config "../../tailwind.config.js";
 
 .toolbar {
-  @apply bg-slate-800 border-b border-slate-700 px-4 py-2 flex justify-between items-center h-10 text-xs;
+  @apply bg-slate-800 border-b border-slate-700 px-4 py-2 flex justify-between items-center h-12 text-xs;
 }
 
 .toolbar-left {
-  @apply flex items-center gap-4;
+  @apply flex items-center;
 }
 
 .toolbar-title {
-  @apply font-semibold text-slate-200;
+  @apply font-semibold text-slate-200 text-sm;
 }
 
-.project-info {
-  @apply flex items-center gap-2;
+.toolbar-center {
+  @apply flex items-center gap-3;
 }
 
-.project-status {
-  @apply text-green-600 text-xs px-1.5 py-0.5 bg-slate-800 border border-slate-700 rounded;
+.pause-btn {
+  @apply w-8 h-8 bg-slate-600 border border-slate-500 text-slate-200 rounded cursor-pointer transition-all duration-200 hover:bg-slate-500 flex items-center justify-center;
 }
 
-.project-status.connected {
-  @apply text-green-400 border-green-400;
+.pause-btn.paused {
+  @apply bg-red-600 border-red-500 hover:bg-red-500;
 }
 
-.project-path {
-  @apply text-blue-300 text-xs max-w-48 whitespace-nowrap overflow-hidden text-ellipsis;
+.clear-btn {
+  @apply w-8 h-8 bg-slate-600 border border-slate-500 text-slate-200 rounded cursor-pointer transition-all duration-200 hover:bg-slate-500 flex items-center justify-center;
 }
 
-.toolbar-stats {
-  @apply flex gap-4 text-blue-300 text-xs;
+.search-container {
+  @apply relative;
 }
 
-.toolbar-right {
-  @apply flex gap-2 items-center;
+.search-input-wrapper {
+  @apply relative flex items-center;
 }
 
-.toolbar-btn {
-  @apply bg-slate-600 border border-slate-500 text-slate-200 px-2 py-1 rounded cursor-pointer text-xs transition-all duration-200 hover:bg-slate-500 hover:border-slate-400 disabled:opacity-60 disabled:cursor-not-allowed;
+.search-icon {
+  @apply absolute left-3 text-slate-400 pointer-events-none;
 }
 
-.toolbar-btn.active {
+.search-input {
+  @apply w-48 bg-slate-600 border border-slate-500 text-slate-300 pl-9 pr-3 py-1.5 rounded text-xs font-mono focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 placeholder-slate-400;
+}
+
+.invert-container {
+  @apply flex items-center;
+}
+
+.invert-checkbox {
+  @apply flex items-center gap-2 cursor-pointer text-slate-300;
+}
+
+.invert-checkbox input[type="checkbox"] {
+  @apply hidden;
+}
+
+.checkmark {
+  @apply w-4 h-4 bg-slate-600 border border-slate-500 rounded flex items-center justify-center text-xs;
+}
+
+.invert-checkbox input[type="checkbox"]:checked + .checkmark {
   @apply bg-sky-600 border-sky-500 text-white;
 }
 
-.spinning {
-  @apply animate-spin;
+.label-text {
+  @apply text-xs font-mono;
 }
 
-.status-indicator {
-  @apply flex items-center gap-1.5 text-green-400 text-xs;
+.category-filters {
+  @apply flex gap-1;
 }
 
-.status-dot {
-  @apply w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse-dot;
+.category-btn {
+  @apply px-3 py-1.5 bg-slate-600 border border-slate-500 text-slate-200 rounded cursor-pointer text-xs transition-all duration-200 hover:bg-slate-500 flex items-center gap-1.5;
+}
+
+.category-btn.active {
+  @apply bg-sky-600 border-sky-500 text-white;
+}
+
+.toolbar-right {
+  @apply flex gap-3 items-center;
+}
+
+.toolbar-btn {
+  @apply bg-slate-600 border border-slate-500 text-slate-200 px-3 py-1.5 rounded cursor-pointer text-xs transition-all duration-200 hover:bg-slate-500 flex items-center gap-1.5;
 }
 </style>
