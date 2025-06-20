@@ -3,7 +3,9 @@ description:
 globs:
 alwaysApply: false
 ---
-- always use pnpm for package management
-- you are only allowed to run commands for installing packages
-- don't run `pnpm run build` command after every change
+- always use `pnpm` for package management
 - Use lucide-vue-next for icons
+- Don't run build commands or start dev server after changes
+- Only focus on making changes related to MacOS, skip Windows and Linux
+- Try to write moduler code, Create new files whenever is a new concept or feature introduction
+- use `vitest` for writing tests
