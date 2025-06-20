@@ -11,14 +11,32 @@ export const uuidRegex = /^\[([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a
 export const jidRegex = /class=([^\s]+)\s+jid=([a-f0-9]+)/;
 
 /**
- * Generates a time-based UUID that groups logs by second
+ * Track the last app system log timestamp and UUID for gap-based grouping
+ */
+let lastAppSystemLogTime = null;
+let lastAppSystemLogUuid = null;
+
+/**
+ * Generates a time-based UUID that groups logs based on 2-second gaps
  * @returns {string} Time-based UUID
  */
 const generateTimeBasedUuid = () => {
   const now = new Date();
-  const timestamp = Math.floor(now.getTime() / 5000); // Truncate to 5 seconds
-  // Create a consistent UUID for the same second
-  return `sys-${timestamp}`;
+  const currentTime = now.getTime();
+  
+  // If this is the first app system log, or more than 2 seconds have passed since the last one,
+  // create a new group
+  if (!lastAppSystemLogTime || (currentTime - lastAppSystemLogTime) > 2000) {
+    lastAppSystemLogTime = currentTime;
+    lastAppSystemLogUuid = `sys-${currentTime}`;
+    return lastAppSystemLogUuid;
+  }
+  
+  // Update the last seen time for the current group
+  lastAppSystemLogTime = currentTime;
+  
+  // Return the existing group UUID
+  return lastAppSystemLogUuid;
 };
 
 /**
