@@ -1,131 +1,187 @@
 import util from 'util'
 
 /**
- * Regex to extract request ID from log lines like [aa32797f-b087-4d45-9d99-28198952a784]
+ * Regex to extract UUID from log lines like [aa32797f-b087-4d45-9d99-28198952a784]
  */
-export const requestIdRegex = /^\[([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\]/;
+export const uuidRegex = /^\[([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\]/;
 
 /**
- * Extracts meaningful title and metadata from log content
- * @param {string} content - The log line content
- * @returns {{method: string, path: string, title: string}}
+ * Regex to extract jid from background job logs like "class=Workers::Database::RefreshMaterializedView jid=73f8e97e7e79413a3006f4ea"
  */
-export const extractRequestTitle = (content) => {
-  // Try to extract HTTP method and path from various log formats
+export const jidRegex = /class=([^\s]+)\s+jid=([a-f0-9]+)/;
 
-  // Pattern 1: Standard HTTP request log like "GET /dashboard/overview"
-  const httpPattern = /(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+([^\s]+)/i;
-  const httpMatch = content.match(httpPattern);
-  if (httpMatch) {
-    return {
-      method: httpMatch[1].toUpperCase(),
-      path: httpMatch[2],
-      title: `${httpMatch[1].toUpperCase()} ${httpMatch[2]}`
-    };
-  }
-
-  // Pattern 2: Rails controller format like "app/controllers/dashboard/overviews_controller.rb:17:in `show'"
-  const controllerPattern = /app\/controllers\/([^\/]+)\/([^\/]+)_controller\.rb.*?`(\w+)'/;
-  const controllerMatch = content.match(controllerPattern);
-  if (controllerMatch) {
-    const namespace = controllerMatch[1];
-    const controller = controllerMatch[2];
-    const action = controllerMatch[3];
-    return {
-      method: 'RAILS',
-      path: `/${namespace}/${controller}#${action}`,
-      title: `${namespace}/${controller}#${action}`
-    };
-  }
-
-  // Pattern 3: Simple controller format like "DashboardController#show"
-  const simpleControllerPattern = /(\w+)Controller#(\w+)/;
-  const simpleControllerMatch = content.match(simpleControllerPattern);
-  if (simpleControllerMatch) {
-    const controller = simpleControllerMatch[1].toLowerCase();
-    const action = simpleControllerMatch[2];
-    return {
-      method: 'RAILS',
-      path: `/${controller}#${action}`,
-      title: `${controller}#${action}`
-    };
-  }
-
-  // Pattern 4: API endpoint format like "/api/v1/users"
-  const apiPattern = /\/api\/[^\s]+/;
-  const apiMatch = content.match(apiPattern);
-  if (apiMatch) {
-    return {
-      method: 'API',
-      path: apiMatch[0],
-      title: apiMatch[0]
-    };
-  }
-
-  // Pattern 5: Generic path format
-  const pathPattern = /\/[^\s]+/;
-  const pathMatch = content.match(pathPattern);
-  if (pathMatch) {
-    return {
-      method: 'WEB',
-      path: pathMatch[0],
-      title: pathMatch[0]
-    };
-  }
-
-  // Pattern 6: Extract first meaningful word/phrase (fallback)
-  const words = content.trim().split(/\s+/).filter(word =>
-    word.length > 2 && !word.match(/^\[|\]$|^\d+$/)
-  );
-
-  if (words.length > 0) {
-    const title = words.slice(0, 3).join(' ');
-    return {
-      method: 'LOG',
-      path: title,
-      title: title.length > 30 ? title.substring(0, 30) + '...' : title
-    };
-  }
-
-  return {
-    method: 'UNKNOWN',
-    path: 'Unknown Request',
-    title: 'Unknown Request'
-  };
+/**
+ * Generates a time-based UUID that groups logs by second
+ * @returns {string} Time-based UUID
+ */
+const generateTimeBasedUuid = () => {
+  const now = new Date();
+  const timestamp = Math.floor(now.getTime() / 5000); // Truncate to 5 seconds
+  // Create a consistent UUID for the same second
+  return `sys-${timestamp}`;
 };
 
 /**
- * Parses a single log line and extracts request information
+ * Extracts log information including type, subType, success, metadata and title
+ * @param {string} content - The log line content
+ * @returns {{type: string, subType: string, success: boolean|null, metadata: object, title: string}}
+ */
+export const extractLogInfo = (content) => {
+  // Default structure for system logs
+  let logInfo = {
+    type: 'app',
+    subType: 'sys',
+    success: null,
+    metadata: {},
+    title: 'System Log'
+  };
+
+  // Pattern 1: Background job logs (check first since they have a specific format)
+  const jidMatch = content.match(jidRegex);
+  if (jidMatch) {
+    const jobClass = jidMatch[1];
+    const jid = jidMatch[2];
+
+    logInfo.type = 'worker';
+    logInfo.subType = 'job';
+    logInfo.title = jobClass.split('::').pop(); // Get the last part of the class name
+    logInfo.metadata.jobClass = jobClass;
+    logInfo.metadata.jid = jid;
+
+    // Extract elapsed time from "done" messages
+    const elapsedMatch = content.match(/elapsed=([\d.]+)/);
+    if (elapsedMatch) {
+      logInfo.metadata.elapsed = parseFloat(elapsedMatch[1]);
+    }
+
+    // Determine success status
+    if (content.includes('INFO: done')) {
+      logInfo.success = true;
+    } else if (content.includes('ERROR:') || content.includes('FATAL:')) {
+      logInfo.success = false;
+    } else if (content.includes('INFO: start')) {
+      logInfo.success = null; // Job started, outcome unknown
+    }
+
+    // Extract database timing from DEBUG messages
+    const dbTimingMatch = content.match(/\(([0-9.]+)ms\)/);
+    if (dbTimingMatch) {
+      logInfo.metadata.dbTiming = parseFloat(dbTimingMatch[1]);
+    }
+
+    return logInfo;
+  }
+
+  // Pattern 2: Web requests - HTTP method and path like "GET /dashboard/overview"
+  const httpPattern = /(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+([^\s]+)/i;
+  const httpMatch = content.match(httpPattern);
+  if (httpMatch) {
+    logInfo.type = 'web';
+    logInfo.subType = httpMatch[1].toUpperCase();
+    logInfo.title = `${httpMatch[1].toUpperCase()} ${httpMatch[2]}`;
+    logInfo.metadata.path = httpMatch[2];
+
+    // Try to extract status code and response time
+    const statusMatch = content.match(/(\d{3})\s+\w+/);
+    if (statusMatch) {
+      const statusCode = parseInt(statusMatch[1]);
+      logInfo.success = statusCode >= 200 && statusCode < 400;
+      logInfo.metadata.statusCode = statusCode;
+    }
+
+    const responseTimeMatch = content.match(/(\d+(?:\.\d+)?)\s*ms/);
+    if (responseTimeMatch) {
+      logInfo.metadata.responseTime = parseFloat(responseTimeMatch[1]);
+    }
+
+    return logInfo;
+  }
+
+  // Everything else is a system log - extract meaningful title
+  const words = content.trim().split(/\s+/).filter(word =>
+    word.length > 2 && !word.match(/^\[|\]$|^\d+$|^(INFO|DEBUG|WARN|ERROR|FATAL)$/i)
+  );
+
+  if (words.length > 0) {
+    logInfo.title = words.slice(0, 4).join(' ');
+    if (logInfo.title.length > 50) {
+      logInfo.title = logInfo.title.substring(0, 50) + '...';
+    }
+  }
+
+  // Determine success status for system logs
+  const levelMatch = content.match(/(INFO|DEBUG|WARN|ERROR|FATAL)/i);
+  if (levelMatch) {
+    logInfo.success = !['ERROR', 'FATAL'].includes(levelMatch[1].toUpperCase());
+  }
+
+  return logInfo;
+};
+
+/**
+ * Parses a single log line and extracts information
  * @param {string} logLine - The log line to parse
- * @returns {{requestId: string|null, content: string, isNewRequest: boolean, titleInfo?: object}}
+ * @returns {{uuid: string|null, content: string, isNewEntry: boolean, logInfo?: object}}
  */
 export const parseLogLine = (logLine) => {
-  const match = logLine.match(requestIdRegex);
-
-  if (match) {
-    const requestId = match[1];
-    const content = logLine.replace(requestIdRegex, '').trim();
-    const titleInfo = extractRequestTitle(content);
+  // First try to match UUID format [uuid]
+  const uuidMatch = logLine.match(uuidRegex);
+  if (uuidMatch) {
+    const uuid = uuidMatch[1];
+    const content = logLine.replace(uuidRegex, '').trim();
+    const logInfo = extractLogInfo(content);
 
     return {
-      requestId: requestId,
+      uuid: uuid,
       content: util.stripVTControlCharacters(content),
-      isNewRequest: false, // Will be determined by storage layer
-      titleInfo: titleInfo
+      isNewEntry: false, // Will be determined by storage layer
+      logInfo: logInfo
+    };
+  }
+
+  // Then try to match background job format with jid
+  const jidMatch = logLine.match(jidRegex);
+  console.log('jidMatch', jidMatch, logLine);
+  if (jidMatch) {
+    const jid = jidMatch[2]; // Use jid as uuid
+    const content = logLine.trim();
+    const logInfo = extractLogInfo(content);
+
+    return {
+      uuid: jid,
+      content: util.stripVTControlCharacters(content),
+      isNewEntry: false, // Will be determined by storage layer
+      logInfo: logInfo
+    };
+  }
+
+  // For all other logs (system logs), generate a time-based UUID
+  const content = logLine.trim();
+  const logInfo = extractLogInfo(content);
+
+  // Only generate time-based UUID for system logs
+  if (logInfo.type === 'app' && logInfo.subType === 'sys') {
+    const timeBasedUuid = generateTimeBasedUuid();
+
+    return {
+      uuid: timeBasedUuid,
+      content: util.stripVTControlCharacters(content),
+      isNewEntry: false, // Will be determined by storage layer
+      logInfo: logInfo
     };
   }
 
   return {
-    requestId: null,
-    content: logLine.trim(),
-    isNewRequest: false
+    uuid: null,
+    content: content,
+    isNewEntry: false
   };
 };
 
 /**
  * Processes multiple log lines and returns parsed entries
  * @param {string[]} lines - Array of log lines to process
- * @returns {Array<{requestId: string|null, content: string, titleInfo?: object}>}
+ * @returns {Array<{uuid: string|null, content: string, logInfo?: object}>}
  */
 export const parseLogLines = (lines) => {
   return lines
@@ -134,11 +190,21 @@ export const parseLogLines = (lines) => {
 };
 
 /**
- * Validates if a string looks like a valid request ID
- * @param {string} requestId - The request ID to validate
+ * Validates if a string looks like a valid UUID
+ * @param {string} uuid - The UUID to validate
  * @returns {boolean}
  */
-export const isValidRequestId = (requestId) => {
-  if (!requestId || typeof requestId !== 'string') return false;
-  return /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(requestId);
+export const isValidUuid = (uuid) => {
+  if (!uuid || typeof uuid !== 'string') return false;
+  return /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(uuid);
+};
+
+/**
+ * Validates if a string looks like a valid job ID (jid)
+ * @param {string} jid - The job ID to validate
+ * @returns {boolean}
+ */
+export const isValidJid = (jid) => {
+  if (!jid || typeof jid !== 'string') return false;
+  return /^[a-f0-9]{24}$/.test(jid); // Sidekiq jids are typically 24 hex characters
 };

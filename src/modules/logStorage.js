@@ -1,63 +1,77 @@
 import log from "electron-log";
 
 /**
- * Efficient storage for grouped log entries by request ID
+ * Efficient storage for grouped log entries by UUID
  */
-export const logEntriesByRequestId = new Map();
+export const logEntriesByUuid = new Map();
 
 /**
- * Adds a log entry to the storage, grouping by request ID
- * @param {string} requestId - The request ID
+ * Adds a log entry to the storage, grouping by UUID
+ * @param {string} uuid - The unique identifier
  * @param {string} content - The log content
- * @param {object} titleInfo - Extracted title information {method, path, title}
- * @returns {{isNewRequest: boolean, totalEntries: number}}
+ * @param {object} logInfo - Extracted log information {type, subType, success, metadata, title}
+ * @returns {{isNewEntry: boolean, totalEntries: number}}
  */
-export const addLogEntry = (requestId, content, titleInfo) => {
-  let isNewRequest = false;
+export const addLogEntry = (uuid, content, logInfo) => {
+  let isNewEntry = false;
 
-  if (!logEntriesByRequestId.has(requestId)) {
-    // Create new request group
-    logEntriesByRequestId.set(requestId, {
-      requestId: requestId,
+  if (!logEntriesByUuid.has(uuid)) {
+    // Create new log group
+    logEntriesByUuid.set(uuid, {
+      uuid: uuid,
+      type: logInfo.type || 'unknown',
+      subType: logInfo.subType || 'unknown',
+      success: logInfo.success !== undefined ? logInfo.success : null,
+      metadata: logInfo.metadata || {},
+      title: logInfo.title || 'Unknown Entry',
       entries: [],
       firstSeen: new Date(),
-      lastSeen: new Date(),
-      method: titleInfo.method,
-      path: titleInfo.path,
-      title: titleInfo.title
+      lastSeen: new Date()
     });
-    isNewRequest = true;
+    isNewEntry = true;
   }
 
-  const requestGroup = logEntriesByRequestId.get(requestId);
-  requestGroup.entries.push({
+  const logGroup = logEntriesByUuid.get(uuid);
+  logGroup.entries.push({
     content: content,
     timestamp: new Date()
   });
-  requestGroup.lastSeen = new Date();
+  logGroup.lastSeen = new Date();
+
+  // Update success status if it's determined later
+  if (logInfo.success !== undefined && logGroup.success === null) {
+    logGroup.success = logInfo.success;
+  }
+
+  // Merge metadata
+  if (logInfo.metadata && Object.keys(logInfo.metadata).length > 0) {
+    logGroup.metadata = { ...logGroup.metadata, ...logInfo.metadata };
+  }
 
   return {
-    isNewRequest: isNewRequest,
-    totalEntries: requestGroup.entries.length
+    isNewEntry: isNewEntry,
+    totalEntries: logGroup.entries.length
   };
 };
 
 /**
  * Gets all log data formatted for the renderer process
- * @returns {{totalRequests: number, requests: Array}}
+ * @returns {{totalEntries: number, entries: Array}}
  */
 export const getFormattedLogData = () => {
   const logData = [];
 
-  for (const [requestId, group] of logEntriesByRequestId) {
+  for (const [uuid, group] of logEntriesByUuid) {
     logData.push({
-      requestId: requestId,
+      uuid: uuid,
+      type: group.type,
+      subType: group.subType,
+      success: group.success,
+      metadata: group.metadata,
+      title: group.title,
       entriesCount: group.entries.length,
       firstSeen: group.firstSeen.toISOString(),
       lastSeen: group.lastSeen.toISOString(),
-      method: group.method || 'UNKNOWN',
-      path: group.path || 'Unknown',
-      title: group.title || 'Unknown Request',
       entries: group.entries.map(entry => ({
         content: entry.content,
         timestamp: entry.timestamp.toISOString()
@@ -66,8 +80,8 @@ export const getFormattedLogData = () => {
   }
 
   return {
-    totalRequests: logEntriesByRequestId.size,
-    requests: logData
+    totalEntries: logEntriesByUuid.size,
+    entries: logData
   };
 };
 
@@ -77,7 +91,7 @@ export const getFormattedLogData = () => {
  */
 export const clearAllLogData = () => {
   try {
-    logEntriesByRequestId.clear();
+    logEntriesByUuid.clear();
     return true;
   } catch (error) {
     log.error('Error clearing log data:', error);
@@ -87,15 +101,22 @@ export const clearAllLogData = () => {
 
 /**
  * Gets statistics about stored log data
- * @returns {{totalRequests: number, totalEntries: number, oldestEntry?: Date, newestEntry?: Date}}
+ * @returns {{totalEntries: number, totalLogEntries: number, oldestEntry?: Date, newestEntry?: Date, typeBreakdown: object}}
  */
 export const getLogStatistics = () => {
-  let totalEntries = 0;
+  let totalLogEntries = 0;
   let oldestEntry = null;
   let newestEntry = null;
+  const typeBreakdown = {};
 
-  for (const [, group] of logEntriesByRequestId) {
-    totalEntries += group.entries.length;
+  for (const [, group] of logEntriesByUuid) {
+    totalLogEntries += group.entries.length;
+
+    // Track type breakdown
+    if (!typeBreakdown[group.type]) {
+      typeBreakdown[group.type] = 0;
+    }
+    typeBreakdown[group.type]++;
 
     if (!oldestEntry || group.firstSeen < oldestEntry) {
       oldestEntry = group.firstSeen;
@@ -107,30 +128,33 @@ export const getLogStatistics = () => {
   }
 
   return {
-    totalRequests: logEntriesByRequestId.size,
-    totalEntries: totalEntries,
+    totalEntries: logEntriesByUuid.size,
+    totalLogEntries: totalLogEntries,
     oldestEntry: oldestEntry,
-    newestEntry: newestEntry
+    newestEntry: newestEntry,
+    typeBreakdown: typeBreakdown
   };
 };
 
 /**
- * Gets a specific request's data by ID
- * @param {string} requestId - The request ID to retrieve
- * @returns {object|null} Request data or null if not found
+ * Gets a specific log entry's data by UUID
+ * @param {string} uuid - The UUID to retrieve
+ * @returns {object|null} Log entry data or null if not found
  */
-export const getRequestById = (requestId) => {
-  const group = logEntriesByRequestId.get(requestId);
+export const getEntryByUuid = (uuid) => {
+  const group = logEntriesByUuid.get(uuid);
   if (!group) return null;
 
   return {
-    requestId: group.requestId,
+    uuid: group.uuid,
+    type: group.type,
+    subType: group.subType,
+    success: group.success,
+    metadata: group.metadata,
+    title: group.title,
     entriesCount: group.entries.length,
     firstSeen: group.firstSeen.toISOString(),
     lastSeen: group.lastSeen.toISOString(),
-    method: group.method || 'UNKNOWN',
-    path: group.path || 'Unknown',
-    title: group.title || 'Unknown Request',
     entries: group.entries.map(entry => ({
       content: entry.content,
       timestamp: entry.timestamp.toISOString()
@@ -141,18 +165,21 @@ export const getRequestById = (requestId) => {
 /**
  * Displays log statistics to console (for debugging)
  */
-export const displayLogsByRequestId = () => {
-  log.info('\n=== Current Log Groups by Request ID ===');
-  log.info(`Total unique requests: ${logEntriesByRequestId.size}`);
+export const displayLogsByUuid = () => {
+  log.info('\n=== Current Log Groups by UUID ===');
+  log.info(`Total unique entries: ${logEntriesByUuid.size}`);
 
-  for (const [requestId, group] of logEntriesByRequestId) {
-    log.info(`\n📋 Request ID: ${requestId}`);
+  for (const [uuid, group] of logEntriesByUuid) {
+    log.info(`\n📋 UUID: ${uuid}`);
+    log.info(`   Type: ${group.type}/${group.subType}`);
+    log.info(`   Success: ${group.success}`);
     log.info(`   Entries: ${group.entries.length}`);
     log.info(`   First seen: ${group.firstSeen.toISOString()}`);
     log.info(`   Last seen: ${group.lastSeen.toISOString()}`);
+    log.info(`   Metadata: ${JSON.stringify(group.metadata)}`);
     log.info('   Recent entries:');
 
-    // Show last 3 entries for this request
+    // Show last 3 entries for this UUID
     const recentEntries = group.entries.slice(-3);
     recentEntries.forEach((entry, index) => {
       log.info(`     ${index + 1}. ${entry.content}`);

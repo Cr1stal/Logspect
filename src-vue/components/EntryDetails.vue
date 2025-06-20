@@ -1,17 +1,17 @@
 <template>
   <div class="details-panel">
     <div class="details-header">
-      <div class="details-title">{{ requestTitle }}</div>
-      <div class="details-id">{{ selectedRequestId || 'Select a request' }}</div>
+      <div class="details-title">{{ entryTitle }}</div>
+      <div class="details-id">{{ selectedUuid || 'Select an entry' }}</div>
     </div>
 
     <div class="details-content" ref="detailsContent">
-      <div v-if="!selectedRequestId" class="empty-state">
+      <div v-if="!selectedUuid" class="empty-state">
         <div class="empty-icon">📋</div>
-        <div>Select a request from the left panel to view its logs</div>
+        <div>Select an entry from the left panel to view its logs</div>
       </div>
 
-      <div v-else-if="selectedRequest">
+      <div v-else-if="selectedEntry">
         <div
           v-for="(entry, index) in sortedEntries"
           :key="index"
@@ -29,18 +29,18 @@
 
 <script>
 export default {
-  name: 'RequestDetails',
+  name: 'EntryDetails',
   data() {
     return {
       copyText: 'click to copy'
     }
   },
   props: {
-    selectedRequestId: {
+    selectedUuid: {
       type: String,
       default: null
     },
-    selectedRequest: {
+    selectedEntry: {
       type: Object,
       default: null
     },
@@ -50,18 +50,18 @@ export default {
     }
   },
   computed: {
-    requestTitle() {
-      if (!this.selectedRequest) return 'Request Details';
-      return this.selectedRequest.title || `${this.selectedRequest.method} ${this.selectedRequest.path}`;
+    entryTitle() {
+      if (!this.selectedEntry) return 'Entry Details';
+      return this.selectedEntry.title || `${this.selectedEntry.type}/${this.selectedEntry.subType}`;
     },
     sortedEntries() {
-      if (!this.selectedRequest || !this.selectedRequest.entries) return [];
+      if (!this.selectedEntry || !this.selectedEntry.entries) return [];
       // Return entries sorted in ascending order (oldest first)
-      return [...this.selectedRequest.entries].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+      return [...this.selectedEntry.entries].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
     }
   },
   watch: {
-    selectedRequest: {
+    selectedEntry: {
       handler() {
         if (this.autoScroll) {
           this.$nextTick(() => {

@@ -9,18 +9,18 @@ export const useLogStore = defineStore('log', {
 
     // Log data state
     logData: {
-      totalRequests: 0,
-      requests: []
+      totalEntries: 0,
+      entries: []
     },
 
     // UI state
-    selectedRequestId: null,
+    selectedUuid: null,
     autoScroll: true,
     isRefreshing: false,
 
     // Search state
     searchTerm: '',
-    filteredRequests: []
+    filteredEntries: []
   }),
 
   getters: {
@@ -29,19 +29,66 @@ export const useLogStore = defineStore('log', {
       return state.projectDirectory.split('/').pop() || 'Unknown Project';
     },
 
-    totalEntries: (state) => {
-      return state.logData.requests.reduce((sum, req) => sum + req.entriesCount, 0);
+    totalLogEntries: (state) => {
+      return state.logData.entries.reduce((sum, entry) => sum + entry.entriesCount, 0);
     },
 
-    selectedRequest: (state) => {
-      if (!state.selectedRequestId) return null;
-      const request = state.logData.requests.find(req => req.requestId === state.selectedRequestId);
-      if (!request) return null;
+    selectedEntry: (state) => {
+      if (!state.selectedUuid) return null;
+      const entry = state.logData.entries.find(entry => entry.uuid === state.selectedUuid);
+      if (!entry) return null;
 
-      // Return a copy of the request with entries sorted in ascending order (oldest first)
+      // Return a copy of the entry with entries sorted in ascending order (oldest first)
       return {
-        ...request,
-        entries: [...request.entries].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
+        ...entry,
+        entries: [...entry.entries].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
+      };
+    },
+
+    // Statistics by type
+    typeBreakdown: (state) => {
+      const breakdown = {
+        web: 0,
+        app: 0,
+        worker: 0,
+        unknown: 0
+      };
+
+      state.logData.entries.forEach(entry => {
+        if (breakdown.hasOwnProperty(entry.type)) {
+          breakdown[entry.type]++;
+        } else {
+          breakdown.unknown++;
+        }
+      });
+
+      return breakdown;
+    },
+
+    // Success rate statistics
+    successStats: (state) => {
+      let total = 0;
+      let successful = 0;
+      let failed = 0;
+      let pending = 0;
+
+      state.logData.entries.forEach(entry => {
+        total++;
+        if (entry.success === true) {
+          successful++;
+        } else if (entry.success === false) {
+          failed++;
+        } else {
+          pending++;
+        }
+      });
+
+      return {
+        total,
+        successful,
+        failed,
+        pending,
+        successRate: total > 0 ? (successful / total) * 100 : 0
       };
     }
   },
@@ -88,9 +135,9 @@ export const useLogStore = defineStore('log', {
     updateLogData(data) {
       this.logData = data;
 
-      // Update filtered requests if there's a search term
+      // Update filtered entries if there's a search term
       if (this.searchTerm.trim()) {
-        this.updateFilteredRequests();
+        this.updateFilteredEntries();
       }
     },
 
@@ -109,15 +156,15 @@ export const useLogStore = defineStore('log', {
     },
 
     async clearLogs() {
-      if (confirm('Clear all request logs? This will remove all captured log data.')) {
+      if (confirm('Clear all log entries? This will remove all captured log data.')) {
         try {
           const result = await window.electronAPI.clearLogs();
 
           if (result.success) {
             console.log('Logs cleared successfully from main process');
-            this.selectedRequestId = null;
+            this.selectedUuid = null;
             this.searchTerm = '';
-            this.filteredRequests = [];
+            this.filteredEntries = [];
           } else {
             console.error('Failed to clear logs:', result.message);
             alert('Failed to clear logs: ' + result.message);
@@ -130,8 +177,8 @@ export const useLogStore = defineStore('log', {
     },
 
     // UI actions
-    selectRequest(requestId) {
-      this.selectedRequestId = requestId;
+    selectEntry(uuid) {
+      this.selectedUuid = uuid;
     },
 
     toggleAutoScroll() {
@@ -141,13 +188,13 @@ export const useLogStore = defineStore('log', {
     // Search actions
     setSearchTerm(term) {
       this.searchTerm = term;
-      this.updateFilteredRequests();
+      this.updateFilteredEntries();
     },
 
-    updateFilteredRequests() {
+    updateFilteredEntries() {
       if (!this.searchTerm.trim()) {
-        // If no search term, return all requests sorted by last seen
-        this.filteredRequests = [...this.logData.requests].sort((a, b) =>
+        // If no search term, return all entries sorted by last seen
+        this.filteredEntries = [...this.logData.entries].sort((a, b) =>
           new Date(b.lastSeen) - new Date(a.lastSeen)
         );
         return;
@@ -155,11 +202,14 @@ export const useLogStore = defineStore('log', {
 
       // Simple search fallback
       const searchLower = this.searchTerm.toLowerCase();
-      this.filteredRequests = this.logData.requests.filter(request => {
-        return request.requestId.toLowerCase().includes(searchLower) ||
-               request.method.toLowerCase().includes(searchLower) ||
-               request.path.toLowerCase().includes(searchLower) ||
-               request.title.toLowerCase().includes(searchLower);
+      this.filteredEntries = this.logData.entries.filter(entry => {
+        return entry.uuid.toLowerCase().includes(searchLower) ||
+               entry.type.toLowerCase().includes(searchLower) ||
+               entry.subType.toLowerCase().includes(searchLower) ||
+               entry.title.toLowerCase().includes(searchLower) ||
+               (entry.metadata && Object.values(entry.metadata).some(value =>
+                 String(value).toLowerCase().includes(searchLower)
+               ));
       }).sort((a, b) => new Date(b.lastSeen) - new Date(a.lastSeen));
     },
 

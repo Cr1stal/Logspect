@@ -1,7 +1,7 @@
 import fs from 'fs';
 import log from "electron-log";
 import { parseLogLines } from './logParser.js';
-import { addLogEntry, displayLogsByRequestId } from './logStorage.js';
+import { addLogEntry, displayLogsByUuid } from './logStorage.js';
 
 // File watching state
 let lastSize = 0;
@@ -104,6 +104,7 @@ export const readLogFile = async () => {
 
       let newContent = '';
       stream.on('data', (chunk) => {
+        console.log('chunk', chunk);
         newContent += chunk;
       });
 
@@ -135,13 +136,13 @@ const processNewLogContent = (content) => {
   const parsedEntries = parseLogLines(lines);
 
   parsedEntries.forEach(parsed => {
-    if (parsed.requestId && parsed.titleInfo) {
-      const result = addLogEntry(parsed.requestId, parsed.content, parsed.titleInfo);
+    if (parsed.uuid && parsed.logInfo) {
+      const result = addLogEntry(parsed.uuid, parsed.content, parsed.logInfo);
 
-      if (result.isNewRequest) {
-        log.info(`🆕 New request started: ${parsed.requestId}`);
+      if (result.isNewEntry) {
+        log.info(`🆕 New ${parsed.logInfo.type} entry started: ${parsed.uuid} (${parsed.logInfo.subType})`);
       } else {
-        log.info(`📝 Additional entry for: ${parsed.requestId}`);
+        log.info(`📝 Additional entry for: ${parsed.uuid} (${parsed.logInfo.type}/${parsed.logInfo.subType})`);
       }
     } else {
       log.info(`❓ Unmatched log: ${parsed.content}`);
@@ -150,7 +151,7 @@ const processNewLogContent = (content) => {
 
   // Optionally display summary for larger batches
   if (lines.length >= 5) {
-    displayLogsByRequestId();
+    displayLogsByUuid();
   }
 
   log.info('=== End of new entries ===\n');
