@@ -25,14 +25,8 @@
 
     <!-- Main Container -->
     <div class="main-container">
-      <!-- Welcome Screen -->
-      <WelcomeScreen
-        v-if="!logStore.hasProject"
-        @select-project="logStore.selectProject"
-      />
-
       <!-- Console Interface -->
-      <div v-else class="console-interface">
+      <div class="console-interface">
         <EntryList
           :entries="logStore.logData.entries"
           :totalEntries="logStore.logData.totalEntries"
@@ -53,7 +47,6 @@
 
     <!-- Footer -->
     <Footer
-      v-if="logStore.hasProject"
       :totalRequests="logStore.logData.totalEntries"
       :totalEntries="logStore.totalLogEntries"
     />
@@ -62,7 +55,6 @@
 
 <script>
 import { useLogStore } from '../stores/logStore.js'
-import WelcomeScreen from './WelcomeScreen.vue'
 import Toolbar from './Toolbar.vue'
 import EntryList from './EntryList.vue'
 import EntryDetails from './EntryDetails.vue'
@@ -71,7 +63,6 @@ import Footer from './Footer.vue'
 export default {
   name: 'LogViewer',
   components: {
-    WelcomeScreen,
     Toolbar,
     EntryList,
     EntryDetails,
@@ -128,11 +119,7 @@ export default {
       }
     }
   },
-  async mounted() {
-    // Load project info and set up listeners
-    await this.logStore.loadProjectInfo()
-    this.logStore.setupLogListener()
-
+  mounted() {
     // Add keyboard event listener
     document.addEventListener('keydown', this.handleKeydown)
   },

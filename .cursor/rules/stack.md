@@ -1,3 +1,0 @@
-- always use pnpm for package management
-- To run the project, use `overmind start`
-- Use lucide-vue-next for icons
