@@ -20,7 +20,14 @@
               <div class="project-path">{{ project.path }}</div>
               <div class="project-last-used">Last used: {{ formatDate(project.lastUsed) }}</div>
             </div>
-            <div class="project-action">
+            <div class="project-actions">
+              <button
+                class="remove-btn"
+                @click.stop="$emit('remove-recent-project', project.path)"
+                title="Remove from recent projects"
+              >
+                <X :size="14" />
+              </button>
               <FolderOpen :size="16" />
             </div>
           </div>
@@ -55,12 +62,13 @@
 </template>
 
 <script>
-import { FolderOpen } from 'lucide-vue-next'
+import { FolderOpen, X } from 'lucide-vue-next'
 
 export default {
   name: 'SplashScreen',
   components: {
-    FolderOpen
+    FolderOpen,
+    X
   },
   props: {
     recentProjects: {
@@ -90,7 +98,7 @@ export default {
       }
     }
   },
-  emits: ['select-project', 'select-recent-project']
+  emits: ['select-project', 'select-recent-project', 'remove-recent-project']
 }
 </script>
 
@@ -149,8 +157,16 @@ export default {
   @apply text-slate-500 text-xs;
 }
 
-.project-action {
-  @apply text-slate-400 ml-4;
+.project-actions {
+  @apply text-slate-400 ml-4 flex items-center gap-2;
+}
+
+.remove-btn {
+  @apply bg-transparent border-none text-slate-400 hover:text-red-400 p-1 rounded transition-colors cursor-pointer;
+}
+
+.remove-btn:hover {
+  @apply bg-red-900/20;
 }
 
 .splash-features {

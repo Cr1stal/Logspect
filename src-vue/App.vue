@@ -6,6 +6,7 @@
       :recentProjects="recentProjects"
       @select-project="handleSelectProject"
       @select-recent-project="handleSelectRecentProject"
+      @remove-recent-project="handleRemoveRecentProject"
     />
 
     <!-- Log Viewer -->
@@ -41,53 +42,50 @@ export default {
     this.logStore.setupLogListener()
 
     // Load recent projects
-    this.loadRecentProjects()
+    await this.loadRecentProjects()
   },
   methods: {
     async handleSelectProject() {
       const selectedPath = await this.logStore.selectProject()
       if (selectedPath) {
-        this.addToRecentProjects(selectedPath)
+        await this.addToRecentProjects(selectedPath)
       }
     },
     async handleSelectRecentProject(projectPath) {
       const success = await this.logStore.selectRecentProject(projectPath)
       if (success) {
-        this.addToRecentProjects(projectPath)
+        await this.addToRecentProjects(projectPath)
       }
     },
-    loadRecentProjects() {
+    async handleRemoveRecentProject(projectPath) {
+      await this.removeRecentProject(projectPath)
+    },
+    async loadRecentProjects() {
       try {
-        const stored = localStorage.getItem('logspect-recent-projects')
-        if (stored) {
-          this.recentProjects = JSON.parse(stored)
+        if (window.electronAPI) {
+          this.recentProjects = await window.electronAPI.getRecentProjects()
         }
       } catch (error) {
         console.error('Error loading recent projects:', error)
         this.recentProjects = []
       }
     },
-    addToRecentProjects(projectPath) {
-      const projectName = projectPath.split('/').pop() || 'Unknown Project'
-
-      // Remove existing entry if it exists
-      this.recentProjects = this.recentProjects.filter(p => p.path !== projectPath)
-
-      // Add to beginning of array
-      this.recentProjects.unshift({
-        name: projectName,
-        path: projectPath,
-        lastUsed: new Date().toISOString()
-      })
-
-      // Keep only last 3 projects
-      this.recentProjects = this.recentProjects.slice(0, 3)
-
-      // Save to localStorage
+    async addToRecentProjects(projectPath) {
       try {
-        localStorage.setItem('logspect-recent-projects', JSON.stringify(this.recentProjects))
+        if (window.electronAPI) {
+          this.recentProjects = await window.electronAPI.addRecentProject(projectPath)
+        }
       } catch (error) {
-        console.error('Error saving recent projects:', error)
+        console.error('Error adding recent project:', error)
+      }
+    },
+    async removeRecentProject(projectPath) {
+      try {
+        if (window.electronAPI) {
+          this.recentProjects = await window.electronAPI.removeRecentProject(projectPath)
+        }
+      } catch (error) {
+        console.error('Error removing recent project:', error)
       }
     }
   }

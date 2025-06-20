@@ -1,0 +1,9 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+- always use pnpm for package management
+- you are only allowed to run commands for installing packages
+- don't run any other commands
+- Use lucide-vue-next for icons

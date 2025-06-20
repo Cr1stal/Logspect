@@ -3,6 +3,7 @@ import log from "electron-log";
 import { prepareProject } from './projectManager.js';
 import { startWatching, getWatchingStatus } from './logWatcher.js';
 import { getFormattedLogData, clearAllLogData } from './logStorage.js';
+import { getRecentProjects, addRecentProject, removeRecentProject, clearRecentProjects } from './recentProjects.js';
 
 // Reference to main window for sending data
 let mainWindow = null;
@@ -123,7 +124,7 @@ export const setupIpcHandlers = () => {
             message: projectResult.message,
             projectDir: projectResult.projectPath,
             logFilePath: projectResult.logPath,
-            logFileExists: true,
+            logFileExists: true, // We can determine this from prepareProject if needed
             hasRailsGem: projectResult.hasRailsGem
           };
         } else {
@@ -178,6 +179,48 @@ export const setupIpcHandlers = () => {
     } catch (error) {
       log.error('Error clearing log data:', error);
       return { success: false, message: `Error clearing log data: ${error.message}` };
+    }
+  });
+
+  // Recent Projects IPC Handlers
+
+  // Handler to get recent projects
+  ipcMain.handle('get-recent-projects', () => {
+    try {
+      return getRecentProjects();
+    } catch (error) {
+      console.error('Error getting recent projects:', error);
+      return [];
+    }
+  });
+
+  // Handler to add a project to recent projects
+  ipcMain.handle('add-recent-project', (event, projectPath) => {
+    try {
+      return addRecentProject(projectPath);
+    } catch (error) {
+      console.error('Error adding recent project:', error);
+      return getRecentProjects(); // Return current list on error
+    }
+  });
+
+  // Handler to remove a project from recent projects
+  ipcMain.handle('remove-recent-project', (event, projectPath) => {
+    try {
+      return removeRecentProject(projectPath);
+    } catch (error) {
+      console.error('Error removing recent project:', error);
+      return getRecentProjects(); // Return current list on error
+    }
+  });
+
+  // Handler to clear all recent projects
+  ipcMain.handle('clear-recent-projects', () => {
+    try {
+      return clearRecentProjects();
+    } catch (error) {
+      console.error('Error clearing recent projects:', error);
+      return [];
     }
   });
 

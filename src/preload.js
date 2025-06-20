@@ -18,5 +18,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getProjectInfo: () => ipcRenderer.invoke('get-project-info'),
   onProjectSelected: (callback) => {
     ipcRenderer.on('project-selected', (event, data) => callback(data));
-  }
+  },
+  // Recent Projects API
+  getRecentProjects: () => ipcRenderer.invoke('get-recent-projects'),
+  addRecentProject: (projectPath) => ipcRenderer.invoke('add-recent-project', projectPath),
+  removeRecentProject: (projectPath) => ipcRenderer.invoke('remove-recent-project', projectPath),
+  clearRecentProjects: () => ipcRenderer.invoke('clear-recent-projects')
 });
