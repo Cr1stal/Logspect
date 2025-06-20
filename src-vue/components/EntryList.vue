@@ -4,19 +4,11 @@
       Entries ({{ displayedEntries.length }})
     </div>
 
-    <div class="filter-section">
-      <input
-        type="text"
-        class="filter-input"
-        placeholder="Search entries... (supports fuzzy search)"
-        :value="logStore.searchTerm"
-        @input="updateSearch"
-      >
-    </div>
-
     <div class="entries-list">
       <div v-if="totalEntries === 0" class="empty-state">
-        <div class="empty-icon">📄</div>
+        <div class="empty-icon">
+          <FileText :size="48" class="opacity-50" />
+        </div>
         <div>No log entries detected yet</div>
       </div>
 
@@ -28,11 +20,7 @@
       >
         <div class="entry-details">
           <div class="entry-title">
-            <span :class="['entry-type', `type-${entry.type}`]">{{ entry.type.toUpperCase() }}</span>
             <span :class="['entry-subtype', `subtype-${entry.subType}`]">{{ entry.subType }}</span>
-            <span v-if="entry.success !== null" :class="['success-indicator', entry.success ? 'success' : 'failed']">
-              {{ entry.success ? '✓' : '✗' }}
-            </span>
           </div>
           <div class="entry-title-text">{{ entry.title }}</div>
           <div class="entry-uuid">{{ entry.uuid }}</div>
@@ -60,10 +48,13 @@
 
 <script>
 import MiniSearch from 'minisearch'
-import { useLogStore } from '../stores/logStore.js'
+import { FileText } from 'lucide-vue-next'
 
 export default {
   name: 'EntryList',
+  components: {
+    FileText
+  },
   props: {
     entries: {
       type: Array,
@@ -76,11 +67,19 @@ export default {
     selectedUuid: {
       type: String,
       default: null
+    },
+    searchTerm: {
+      type: String,
+      default: ''
+    },
+    invertOrder: {
+      type: Boolean,
+      default: false
+    },
+    activeCategories: {
+      type: Array,
+      default: () => ['all']
     }
-  },
-  setup() {
-    const logStore = useLogStore()
-    return { logStore }
   },
   data() {
     return {
@@ -90,30 +89,50 @@ export default {
   },
   computed: {
     displayedEntries() {
-      const searchTerm = this.logStore.searchTerm.trim();
+      let filteredEntries = this.entries;
 
-      if (!searchTerm) {
-        // If no search term, return all entries sorted by first seen
-        return [...this.entries].sort((a, b) => new Date(a.firstSeen) - new Date(b.firstSeen));
+      // Apply category filter
+      if (!this.activeCategories.includes('all')) {
+        filteredEntries = filteredEntries.filter(entry =>
+          this.activeCategories.includes(entry.type)
+        );
       }
 
-      if (!this.miniSearch || this.searchResults.length === 0) {
-        // Use store's simple search fallback
-        this.logStore.updateFilteredEntries();
-        return this.logStore.filteredEntries;
+      // Apply search filter
+      const searchTerm = this.searchTerm.trim();
+      if (searchTerm) {
+        if (this.miniSearch && this.searchResults.length > 0) {
+          // Use MiniSearch results
+          const searchResultUuids = new Set(this.searchResults.map(result => result.id));
+          filteredEntries = filteredEntries.filter(entry => searchResultUuids.has(entry.uuid));
+        } else {
+          // Fallback simple search
+          filteredEntries = filteredEntries.filter(entry =>
+            entry.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            entry.type.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            entry.subType.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            entry.uuid.toLowerCase().includes(searchTerm.toLowerCase())
+          );
+        }
       }
 
-      // Return MiniSearch results with relevance scoring
-      return this.searchResults.map(result => {
-        const entry = this.entries.find(entry => entry.uuid === result.id);
-        return { ...entry, searchScore: result.score };
-      }).filter(Boolean);
+      // Apply sorting
+      const sorted = [...filteredEntries].sort((a, b) => {
+        const dateA = new Date(a.firstSeen);
+        const dateB = new Date(b.firstSeen);
+        return this.invertOrder ? dateB - dateA : dateA - dateB;
+      });
+
+      return sorted;
     }
   },
   watch: {
     entries: {
       handler: 'rebuildSearchIndex',
       deep: true
+    },
+    searchTerm: {
+      handler: 'performSearch'
     }
   },
   mounted() {
@@ -173,33 +192,23 @@ export default {
         this.miniSearch.addAll(searchDocuments);
 
         // Re-run search if there's an active search term
-        if (this.logStore.searchTerm.trim()) {
+        if (this.searchTerm.trim()) {
           this.performSearch();
         }
       } catch (error) {
         console.error('Error rebuilding search index:', error);
       }
     },
-    updateSearch(event) {
-      const searchTerm = event.target.value;
-      this.logStore.setSearchTerm(searchTerm);
-
-      // Debounce search to avoid excessive re-indexing
-      clearTimeout(this.searchTimeout);
-      this.searchTimeout = setTimeout(() => {
-        this.performSearch();
-      }, 150);
-    },
     performSearch() {
-      if (!this.miniSearch || !this.logStore.searchTerm.trim()) {
+      if (!this.miniSearch || !this.searchTerm.trim()) {
         this.searchResults = [];
         return;
       }
 
       try {
-        this.searchResults = this.miniSearch.search(this.logStore.searchTerm.trim(), {
+        this.searchResults = this.miniSearch.search(this.searchTerm.trim(), {
           // Override default options for specific searches if needed
-          fuzzy: this.logStore.searchTerm.length > 3 ? 0.2 : false, // Only use fuzzy for longer terms
+          fuzzy: this.searchTerm.length > 3 ? 0.2 : false, // Only use fuzzy for longer terms
           boost: {
             type: 3,
             subType: 2,
@@ -235,20 +244,12 @@ export default {
   @apply bg-slate-700 px-3 py-2 border-b border-slate-600 text-xs font-semibold text-slate-200 flex-shrink-0;
 }
 
-.filter-section {
-  @apply px-3 py-2 border-b border-slate-600 bg-slate-700 flex-shrink-0;
-}
-
-.filter-input {
-  @apply w-full bg-slate-600 border border-slate-500 text-slate-300 px-2 py-1 rounded text-xs font-mono focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 placeholder-green-600;
-}
-
 .entries-list {
   @apply flex-1 overflow-y-auto h-0;
 }
 
 .entry-item {
-  @apply flex items-center px-3 py-2 border-b border-slate-700 cursor-pointer transition-colors text-xs hover:bg-slate-700/60;
+  @apply flex items-center px-4 py-3 border-b border-slate-700 cursor-pointer transition-colors text-xs hover:bg-slate-700/60;
 }
 
 .entry-item.selected {
@@ -256,35 +257,15 @@ export default {
 }
 
 .entry-details {
-  @apply flex-1 min-w-0;
+  @apply flex-1 min-w-0 space-y-1;
 }
 
 .entry-title {
-  @apply text-slate-200 font-semibold text-xs mb-1 whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-1;
-}
-
-.entry-type {
-  @apply inline-block px-1.5 py-0.5 rounded text-xs font-semibold min-w-10 text-center;
-}
-
-.type-web {
-  @apply bg-blue-600 text-white;
-}
-
-.type-app {
-  @apply bg-purple-600 text-white;
-}
-
-.type-worker {
-  @apply bg-orange-600 text-white;
-}
-
-.type-unknown {
-  @apply bg-slate-600 text-slate-300;
+  @apply text-slate-200 font-semibold text-xs mb-2 whitespace-nowrap overflow-hidden text-ellipsis flex items-center gap-1;
 }
 
 .entry-subtype {
-  @apply inline-block px-1 py-0.5 rounded text-xs font-medium;
+  @apply inline-block px-2 py-1 rounded text-xs font-medium;
 }
 
 .subtype-GET {
@@ -335,24 +316,12 @@ export default {
   @apply bg-slate-800 text-slate-400;
 }
 
-.success-indicator {
-  @apply inline-block px-1 py-0.5 rounded text-xs font-bold;
-}
-
-.success-indicator.success {
-  @apply bg-green-600 text-white;
-}
-
-.success-indicator.failed {
-  @apply bg-red-600 text-white;
-}
-
 .entry-title-text {
-  @apply text-blue-300 text-xs font-normal mb-0.5 truncate;
+  @apply text-blue-300 text-xs font-normal mb-1 truncate;
 }
 
 .entry-uuid {
-  @apply text-green-600 font-normal text-xs mb-0.5 whitespace-nowrap overflow-hidden text-ellipsis opacity-70;
+  @apply text-green-600 font-normal text-xs mb-1 whitespace-nowrap overflow-hidden text-ellipsis opacity-70;
 }
 
 .entry-meta {
@@ -376,7 +345,7 @@ export default {
 }
 
 .empty-icon {
-  @apply text-5xl mb-4 opacity-50;
+  @apply mb-4 flex justify-center;
 }
 
 /* Custom scrollbar for webkit browsers */

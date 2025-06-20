@@ -185,6 +185,22 @@ export const useLogStore = defineStore('log', {
       this.autoScroll = !this.autoScroll;
     },
 
+    async toggleWatching() {
+      try {
+        if (this.isWatching) {
+          // Stop watching
+          await window.electronAPI.stopWatching();
+          this.isWatching = false;
+        } else {
+          // Start watching
+          await window.electronAPI.startWatching();
+          this.isWatching = true;
+        }
+      } catch (error) {
+        console.error('Error toggling watching:', error);
+      }
+    },
+
     // Search actions
     setSearchTerm(term) {
       this.searchTerm = term;

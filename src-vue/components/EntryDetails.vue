@@ -7,7 +7,9 @@
 
     <div class="details-content" ref="detailsContent">
       <div v-if="!selectedUuid" class="empty-state">
-        <div class="empty-icon">📋</div>
+        <div class="empty-icon">
+          <ClipboardList :size="48" class="opacity-50" />
+        </div>
         <div>Select an entry from the left panel to view its logs</div>
       </div>
 
@@ -28,8 +30,13 @@
 </template>
 
 <script>
+import { ClipboardList } from 'lucide-vue-next'
+
 export default {
   name: 'EntryDetails',
+  components: {
+    ClipboardList
+  },
   data() {
     return {
       copyText: 'click to copy'
@@ -138,7 +145,7 @@ export default {
 }
 
 .empty-icon {
-  @apply text-5xl mb-4 opacity-50;
+  @apply mb-4 flex justify-center;
 }
 
 /* Custom scrollbar for webkit browsers */
