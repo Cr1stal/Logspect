@@ -11,10 +11,9 @@ const store = new Store({
         type: 'object',
         properties: {
           name: { type: 'string' },
-          path: { type: 'string' },
-          lastUsed: { type: 'string' }
+          path: { type: 'string' }
         },
-        required: ['name', 'path', 'lastUsed']
+        required: ['name', 'path']
       },
       maxItems: 3
     }
@@ -43,8 +42,7 @@ export const addRecentProject = (projectPath) => {
   // Add to beginning of array
   const updatedProjects = [{
     name: projectName,
-    path: projectPath,
-    lastUsed: new Date().toISOString()
+    path: projectPath
   }, ...filteredProjects];
 
   // Keep only last 3 projects
