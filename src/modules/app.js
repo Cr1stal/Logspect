@@ -3,19 +3,18 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
-import pkg from "electron-updater"
 import log from "electron-log";
 import { isDev, VITE_DEV_SERVER_URL } from './devtools.js';
 import { setupIpcHandlers, setMainWindow, streamDataToRenderer } from './ipcHandlers.js';
 import { setLogDataCallback } from './logWatcher.js';
+import { createMenu } from './menu.js';
+import { setupAutoUpdater, checkForUpdatesOnStartup } from './autoUpdater.js';
 
 // ES module equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 let mainWindow = null;
-
-const { autoUpdater } = pkg;
 
 /**
  * Creates the main application window
@@ -75,13 +74,14 @@ export const initializeApp = () => {
   // Set up IPC handlers before creating window
   setupIpcHandlers();
 
-  autoUpdater.logger = log
-  autoUpdater.logger.transports.file.level = "debug"
-  autoUpdater.forceDevUpdateConfig = true
-
-
   app.whenReady().then(() => {
     createWindow();
+
+    // Create application menu
+    createMenu(mainWindow);
+
+    // Set up auto-updater event handlers
+    setupAutoUpdater(mainWindow);
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
@@ -89,8 +89,10 @@ export const initializeApp = () => {
       }
     });
 
-    // Set up auto-updater
-    autoUpdater.checkForUpdatesAndNotify();
+    // Check for updates after app is ready and window is created
+    setTimeout(() => {
+      checkForUpdatesOnStartup();
+    }, 3000); // Wait 3 seconds after app start
 
   });
 
