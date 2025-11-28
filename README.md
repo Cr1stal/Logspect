@@ -1,4 +1,4 @@
-# Logspect - Log Management Solution
+# Logspect - Ruby on Rails Log Viewer
 
 A powerful Electron-based log viewer application for Ruby on Rails projects. It aims to become the dev tool for log related debugging and unlock productivity.
 
@@ -119,3 +119,7 @@ If you prefer to run them separately:
 - **Package Manager**: pnpm
 - **Build Tool**: electron-builder
 - **Development**: concurrently, wait-on, cross-env
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
