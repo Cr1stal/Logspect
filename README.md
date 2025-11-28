@@ -2,6 +2,8 @@
 
 A powerful Electron-based log viewer application for Ruby on Rails projects. It aims to become the dev tool for log related debugging and unlock productivity.
 
+![Logspect App Screenshot](./assets/images//logspect.png)
+
 ## Features
 
 - Modern Vue.js frontend with Vite for fast development
