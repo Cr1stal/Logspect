@@ -11,6 +11,15 @@ A powerful Electron-based log viewer application for Ruby on Rails projects. It 
 - Multiple HTTP method support (GET, POST, PUT, DELETE, PATCH)
 - Cross-platform Electron application
 
+## How to use
+
+- Download the latest release from the [releases page](https://github.com/logspect/logspect/releases)
+- Add `config.log_tags = [ :request_id ]` to your Rails application's `config/application.rb` file
+- Restart your Rails application
+- Open Logspect and select your Rails application directory
+- Start your Rails application
+- Open Logspect and start viewing logs
+
 ## Development
 
 ### Prerequisites
