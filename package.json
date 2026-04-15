@@ -2,71 +2,46 @@
   "name": "logspect",
   "description": "Logspect is a tool for viewing and analyzing Ruby on Rails logs.",
   "version": "0.5.0",
-  "main": "src/main.js",
-  "type": "module",
+  "main": ".vite/build/main.js",
   "scripts": {
-    "start": "electron .",
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview",
+    "start": "electron-forge start",
+    "dev": "vite --config vite.renderer.config.mjs",
+    "build": "vite build --config vite.renderer.config.mjs",
+    "preview": "vite preview --config vite.renderer.config.mjs",
+    "postinstall": "node scripts/postinstall.cjs",
+    "package": "electron-forge package",
+    "dist": "electron-forge make",
+    "dist:mac": "electron-forge make --platform=darwin",
+    "release": "electron-forge publish --platform=darwin",
     "test": "vitest",
-    "test:run": "vitest run",
-    "dist": "pnpm build && electron-builder",
-    "upload:release": "node scripts/upload-release.js",
-    "release": "rimraf dist && pnpm dist && electron-builder --publish always && pnpm upload:release"
+    "test:run": "vitest run"
   },
-  "build": {
-    "appId": "com.logspect.app",
-    "productName": "logspect",
-    "copyright": "Copyright © 2025 Bilal Budhani",
-    "forceCodeSigning": true,
-    "afterSign": "scripts/aftersign.js",
-    "files": [
-      "src/**/*",
-      "public/**/*",
-      "images/**/*",
-      "build/icons/**/*"
-    ],
-    "dmg": {
-      "sign": false
-    },
-    "mac": {
-      "icon": "build/icons/icon.icns",
-      "hardenedRuntime": true,
-      "gatekeeperAssess": false,
-      "target": "default",
-      "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.plist"
-    },
-    "publish": {
-      "provider": "generic",
-      "url": "https://releases.logspect.app"
-    }
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Cr1stal/Logspect.git"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "packageManager": "pnpm@10.11.0",
   "devDependencies": {
-    "@aws-sdk/client-s3": "^3.0.0",
-    "@electron/notarize": "^3.0.1",
+    "@electron-forge/cli": "^7.9.0",
+    "@electron-forge/maker-dmg": "^7.9.0",
+    "@electron-forge/maker-zip": "^7.9.0",
+    "@electron-forge/plugin-vite": "^7.9.0",
+    "@electron-forge/publisher-github": "^7.9.0",
     "@tailwindcss/vite": "^4.1.8",
     "@vitejs/plugin-vue": "^5.2.4",
-    "cross-env": "^7.0.3",
     "electron": "^36.3.2",
-    "electron-builder": "^26.0.12",
     "electron-devtools-installer": "^4.0.0",
-    "rimraf": "^6.0.1",
     "tailwindcss": "^4.1.8",
     "vite": "^6.3.5",
     "vite-plugin-vue-devtools": "^7.7.6",
-    "vitest": "^2.1.9",
-    "wait-on": "^8.0.3"
+    "vitest": "^2.1.9"
   },
   "dependencies": {
     "electron-log": "^5.4.0",
     "electron-store": "^10.1.0",
-    "electron-updater": "^6.6.2",
     "lucide-vue-next": "^0.518.0",
     "minisearch": "^7.1.2",
     "nanoid": "^5.1.5",

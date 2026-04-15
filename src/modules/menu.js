@@ -16,7 +16,7 @@ export const createMenu = (mainWindow) => {
         { role: 'about' },
         { type: 'separator' },
         {
-          label: 'Check for Updates...',
+          label: 'Download Latest Release...',
           click: () => checkForUpdatesManually(mainWindow)
         },
         { type: 'separator' },
@@ -140,7 +140,7 @@ export const createMenu = (mainWindow) => {
         ...(isMac ? [] : [
           { type: 'separator' },
           {
-            label: 'Check for Updates...',
+            label: 'Download Latest Release...',
             click: () => checkForUpdatesManually(mainWindow)
           }
         ])

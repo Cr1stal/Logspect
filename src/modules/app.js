@@ -1,10 +1,10 @@
+/* global MAIN_WINDOW_VITE_DEV_SERVER_URL, MAIN_WINDOW_VITE_NAME */
+
 import { app, BrowserWindow } from 'electron';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { dirname } from 'path';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import log from "electron-log";
-import { isDev, VITE_DEV_SERVER_URL } from './devtools.js';
+import { isDev } from './devtools.js';
 import { setupIpcHandlers, setMainWindow, streamDataToRenderer } from './ipcHandlers.js';
 import { setLogDataCallback } from './logWatcher.js';
 import { createMenu } from './menu.js';
@@ -12,7 +12,7 @@ import { setupAutoUpdater, checkForUpdatesOnStartup } from './autoUpdater.js';
 
 // ES module equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+const __dirname = path.dirname(__filename);
 
 let mainWindow = null;
 
@@ -21,40 +21,36 @@ let mainWindow = null;
  * @returns {Promise<BrowserWindow>}
  */
 export const createWindow = async () => {
+  const preloadPath = path.join(__dirname, 'preload.js');
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      preload: path.join(__dirname, '../preload.js')
+      preload: preloadPath
     }
   });
 
   mainWindow = win;
   setMainWindow(win);
+  createMenu(win);
 
   // Set up callback for when new log data is available
   setLogDataCallback(() => {
     streamDataToRenderer();
   });
 
-  // Load app from Vite dev server in development, or from built files in production
-  if (isDev) {
-      log.info('Development mode: Loading from Vite dev server...');
-      await win.loadURL(VITE_DEV_SERVER_URL);
+  if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
+    log.info('Development mode: Loading from Vite dev server...');
+    await win.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
 
-      // Open DevTools in development
+    if (isDev) {
       win.webContents.openDevTools();
-  } else {
-    // Production mode: load from built files
-    const indexPath = path.join(__dirname, '../../dist/index.html');
-    if (fs.existsSync(indexPath)) {
-      win.loadFile(indexPath);
-    } else {
-      // Fallback to public/index.html if dist doesn't exist
-      win.loadFile('public/index.html');
     }
+  } else {
+    const indexPath = path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`);
+    await win.loadFile(indexPath);
   }
 
   // Send initial data when window is ready
@@ -74,11 +70,8 @@ export const initializeApp = () => {
   // Set up IPC handlers before creating window
   setupIpcHandlers();
 
-  app.whenReady().then(() => {
-    createWindow();
-
-    // Create application menu
-    createMenu(mainWindow);
+  app.whenReady().then(async () => {
+    await createWindow();
 
     // Set up auto-updater event handlers
     setupAutoUpdater(mainWindow);
