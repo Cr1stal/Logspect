@@ -386,14 +386,23 @@ export const searchLogFile = async (logFilePath, query) => {
     summary: createEmptySummary()
   });
 
-  const indexedSearch = await searchIndexedLogFile(
-    logFilePath,
-    normalizedQuery,
-    {
-      maxGroups: MAX_SEARCH_RESULT_GROUPS,
-      maxLinesPerGroup: MAX_SEARCH_RESULT_LINES_PER_GROUP
-    }
-  );
+  let indexedSearch = {
+    success: false,
+    reason: 'sqlite_error'
+  };
+
+  try {
+    indexedSearch = await searchIndexedLogFile(
+      logFilePath,
+      normalizedQuery,
+      {
+        maxGroups: MAX_SEARCH_RESULT_GROUPS,
+        maxLinesPerGroup: MAX_SEARCH_RESULT_LINES_PER_GROUP
+      }
+    );
+  } catch (error) {
+    log.error('Indexed log search failed, falling back to stream scan:', error);
+  }
 
   if (searchState.cancelled) {
     return {
@@ -440,7 +449,9 @@ export const searchLogFile = async (logFilePath, query) => {
   }
 
   if (indexedSearch.reason === 'stale' || indexedSearch.reason === 'not_ready') {
-    void startLogIndexing(logFilePath);
+    void startLogIndexing(logFilePath).catch((error) => {
+      log.error('Background log indexing failed:', error);
+    });
   }
 
   emitSearchStatus({

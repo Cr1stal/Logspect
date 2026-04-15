@@ -12,7 +12,6 @@ vi.mock('electron-log', () => ({
 }));
 
 const temporaryDirectories = [];
-
 const createTempLogFile = async (content) => {
   const directoryPath = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'logspect-index-'));
   temporaryDirectories.push(directoryPath);
@@ -96,6 +95,30 @@ describe('logIndex', () => {
     expect(result.success).toBe(true);
     expect(result.summary.matchedLines).toBe(1);
     expect(result.results.entries[0].uuid).toBe('bb32797f-b087-4d45-9d99-28198952a784');
+    expect(result.results.entries[0].entries[0].lineNumber).toBe(2);
+  });
+
+  it('falls back to plain SQLite search when the FTS table is unavailable', async () => {
+    const { directoryPath, logFilePath } = await createTempLogFile([
+      '[aa32797f-b087-4d45-9d99-28198952a784] INFO: callback booted',
+      '[aa32797f-b087-4d45-9d99-28198952a784] ERROR: callback timeout'
+    ].join('\n'));
+
+    const status = await waitForIndexReady(logFilePath, directoryPath);
+    const { default: Database } = await import('better-sqlite3');
+    const db = new Database(status.dbPath);
+    db.exec('DROP TABLE IF EXISTS log_lines_fts;');
+    db.close();
+
+    const { searchIndexedLogFile, setLogIndexStorageDirectory } = await import('../logIndex.js');
+    setLogIndexStorageDirectory(directoryPath);
+
+    const result = await searchIndexedLogFile(logFilePath, 'callback timeout');
+
+    expect(result.success).toBe(true);
+    expect(result.backend).toBe('sqlite');
+    expect(result.summary.matchedLines).toBe(1);
+    expect(result.results.entries[0].uuid).toBe('aa32797f-b087-4d45-9d99-28198952a784');
     expect(result.results.entries[0].entries[0].lineNumber).toBe(2);
   });
 });

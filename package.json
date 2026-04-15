@@ -24,10 +24,19 @@
   "author": "",
   "license": "ISC",
   "packageManager": "pnpm@10.11.0",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@tailwindcss/oxide",
+      "better-sqlite3",
+      "electron",
+      "esbuild"
+    ]
+  },
   "devDependencies": {
     "@electron-forge/cli": "^7.9.0",
     "@electron-forge/maker-dmg": "^7.9.0",
     "@electron-forge/maker-zip": "^7.9.0",
+    "@electron-forge/plugin-auto-unpack-natives": "^7.11.1",
     "@electron-forge/plugin-vite": "^7.9.0",
     "@electron-forge/publisher-github": "^7.9.0",
     "@tailwindcss/vite": "^4.1.8",
@@ -40,6 +49,7 @@
     "vitest": "^2.1.9"
   },
   "dependencies": {
+    "better-sqlite3": "^12.9.0",
     "electron-log": "^5.4.0",
     "electron-store": "^10.1.0",
     "lucide-vue-next": "^0.518.0",

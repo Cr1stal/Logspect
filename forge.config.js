@@ -1,6 +1,13 @@
 const packageJson = require('./package.json');
 
 const isPrerelease = packageJson.version.includes('-');
+const viteRetainedPaths = [
+  '/.vite',
+  '/node_modules',
+  '/node_modules/better-sqlite3',
+  '/node_modules/bindings',
+  '/node_modules/file-uri-to-path',
+];
 
 module.exports = {
   packagerConfig: {
@@ -8,6 +15,10 @@ module.exports = {
     appCategoryType: 'public.app-category.developer-tools',
     appCopyright: 'Copyright © 2025 Bilal Budhani',
     asar: true,
+    ignore: (file) => {
+      if (!file) return false;
+      return !viteRetainedPaths.some((allowedPath) => file.startsWith(allowedPath));
+    },
     icon: './build/icons/icon.icns',
     osxNotarize: false,
     osxSign: false,
@@ -41,6 +52,10 @@ module.exports = {
     },
   ],
   plugins: [
+    {
+      name: '@electron-forge/plugin-auto-unpack-natives',
+      config: {},
+    },
     {
       name: '@electron-forge/plugin-vite',
       config: {

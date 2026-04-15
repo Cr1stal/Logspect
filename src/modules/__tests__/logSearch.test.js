@@ -124,4 +124,33 @@ describe('logSearch', () => {
     });
     expect(finalResults.entries[0].entries[0].lineNumber).toBe(3);
   });
+
+  it('falls back to a stream scan when indexed search throws unexpectedly', async () => {
+    vi.doMock('../logIndex.js', async () => {
+      const actual = await vi.importActual('../logIndex.js');
+
+      return {
+        ...actual,
+        searchIndexedLogFile: vi.fn().mockRejectedValue(new Error('no such module: fts5')),
+        startLogIndexing: vi.fn().mockResolvedValue({
+          success: false
+        })
+      };
+    });
+
+    const logFilePath = await createTempLogFile([
+      '[aa32797f-b087-4d45-9d99-28198952a784] ERROR: callback timeout',
+      '[bb32797f-b087-4d45-9d99-28198952a784] INFO: ignore me'
+    ].join('\n'));
+
+    const { resultsEvents, statusEvents } = await waitForSearchCompletion(logFilePath, 'callback');
+    const finalResults = resultsEvents.at(-1);
+    const finalStatus = statusEvents.at(-1);
+
+    expect(finalStatus.status).toBe('completed');
+    expect(finalStatus.backend).toBe('scan');
+    expect(finalResults.entries).toHaveLength(1);
+    expect(finalResults.entries[0].uuid).toBe('aa32797f-b087-4d45-9d99-28198952a784');
+    expect(finalResults.entries[0].entries[0].lineNumber).toBe(1);
+  });
 });

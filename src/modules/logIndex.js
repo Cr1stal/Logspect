@@ -12,8 +12,17 @@ const INDEX_STREAM_HIGH_WATER_MARK = 256 * 1024;
 const INDEX_BATCH_SIZE = 500;
 const INDEX_PROGRESS_INTERVAL_MS = 150;
 const INDEX_YIELD_EVERY_N_LINES = 2000;
+const SQLITE_FTS5_TABLE_SQL = `
+  CREATE VIRTUAL TABLE IF NOT EXISTS log_lines_fts USING fts5(
+    group_id,
+    title,
+    content,
+    metadata_text,
+    tokenize = 'unicode61'
+  );
+`;
 
-let DatabaseSync = null;
+let BetterSqlite3 = null;
 let sqliteSupported = null;
 let indexStorageDirectory = path.join(os.tmpdir(), 'logspect-indexes');
 let activeIndexJob = null;
@@ -49,22 +58,23 @@ const yieldToEventLoop = () => (
   })
 );
 
-const loadSqlite = async () => {
+const loadSqlite = () => {
   if (sqliteSupported === false) {
     return null;
   }
 
-  if (DatabaseSync) {
-    return DatabaseSync;
+  if (BetterSqlite3) {
+    return BetterSqlite3;
   }
 
   try {
-    ({ DatabaseSync } = require('node:sqlite'));
+    const loadedModule = require('better-sqlite3');
+    BetterSqlite3 = loadedModule.default || loadedModule;
     sqliteSupported = true;
-    return DatabaseSync;
+    return BetterSqlite3;
   } catch (error) {
     sqliteSupported = false;
-    log.warn?.('SQLite is not available in this runtime:', error);
+    log.warn?.('better-sqlite3 is not available in this runtime:', error);
     return null;
   }
 };
@@ -82,13 +92,28 @@ const getIndexDatabasePath = async (logFilePath) => {
   return path.join(indexStorageDirectory, `${buildFileKey(logFilePath)}.sqlite`);
 };
 
+const hasTable = (db, tableName) => Boolean(
+  db.prepare(`
+    SELECT 1
+    FROM sqlite_master
+    WHERE name = ?
+    LIMIT 1
+  `).get(tableName)
+);
+
+const supportsFts5 = (db) => Boolean(
+  db.prepare(`
+    SELECT sqlite_compileoption_used('ENABLE_FTS5') AS enabled
+  `).get().enabled
+);
+
 const openDatabase = async (dbPath) => {
-  const SQLiteDatabaseSync = await loadSqlite();
-  if (!SQLiteDatabaseSync) {
+  const SQLiteDatabase = loadSqlite();
+  if (!SQLiteDatabase) {
     return null;
   }
 
-  const db = new SQLiteDatabaseSync(dbPath);
+  const db = new SQLiteDatabase(dbPath);
   db.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;
@@ -120,17 +145,20 @@ const openDatabase = async (dbPath) => {
 
     CREATE INDEX IF NOT EXISTS idx_log_lines_line_number ON log_lines(line_number);
     CREATE INDEX IF NOT EXISTS idx_log_lines_group_id ON log_lines(group_id, line_number);
-
-    CREATE VIRTUAL TABLE IF NOT EXISTS log_lines_fts USING fts5(
-      group_id,
-      title,
-      content,
-      metadata_text,
-      tokenize = 'unicode61'
-    );
   `);
 
-  return db;
+  const supportsFts = supportsFts5(db);
+
+  if (supportsFts) {
+    db.exec(SQLITE_FTS5_TABLE_SQL);
+  } else {
+    log.warn('better-sqlite3 was loaded without FTS5 support. Falling back to plain SQLite text search.');
+  }
+
+  return {
+    db,
+    supportsFts
+  };
 };
 
 const getPersistedIndexState = (db) => (
@@ -188,10 +216,11 @@ const saveIndexState = (db, {
 };
 
 const clearExistingIndexData = (db) => {
-  db.exec(`
-    DELETE FROM log_lines;
-    DELETE FROM log_lines_fts;
-  `);
+  db.exec('DELETE FROM log_lines;');
+
+  if (hasTable(db, 'log_lines_fts')) {
+    db.exec('DELETE FROM log_lines_fts;');
+  }
 };
 
 const createIndexRecord = (rawLine, lineNumber) => {
@@ -267,7 +296,18 @@ const withTransaction = (db, callback) => {
   }
 };
 
-const determineIndexMode = (persistedState, stats, logFilePath, forceRebuild) => {
+const isFtsIndexUsable = (db) => {
+  if (!hasTable(db, 'log_lines_fts')) {
+    return false;
+  }
+
+  const lineCount = db.prepare('SELECT COUNT(*) AS count FROM log_lines').get().count;
+  const ftsCount = db.prepare('SELECT COUNT(*) AS count FROM log_lines_fts').get().count;
+
+  return lineCount === ftsCount;
+};
+
+const determineIndexMode = (persistedState, stats, logFilePath, forceRebuild, { db, supportsFts }) => {
   if (forceRebuild || !persistedState) {
     return {
       mode: 'rebuild',
@@ -285,6 +325,14 @@ const determineIndexMode = (persistedState, stats, logFilePath, forceRebuild) =>
   }
 
   if (stats.size < persistedState.indexedBytes) {
+    return {
+      mode: 'rebuild',
+      indexedBytes: 0,
+      indexedLineCount: 0
+    };
+  }
+
+  if (supportsFts && !isFtsIndexUsable(db)) {
     return {
       mode: 'rebuild',
       indexedBytes: 0,
@@ -326,13 +374,15 @@ const flushBatch = (db, batch, insertLineStatement, insertFtsStatement) => {
         record.metadataText
       );
 
-      insertFtsStatement.run(
-        result.lastInsertRowid,
-        record.groupId,
-        record.title,
-        record.content,
-        record.metadataText
-      );
+      if (insertFtsStatement) {
+        insertFtsStatement.run(
+          result.lastInsertRowid,
+          record.groupId,
+          record.title,
+          record.content,
+          record.metadataText
+        );
+      }
     });
   });
 
@@ -344,18 +394,19 @@ const isActiveIndexJob = (job) => (
 );
 
 const runIndexJob = async (job, dbPath, statsSnapshot, mode, baselineState) => {
-  const db = await openDatabase(dbPath);
-  if (!db) {
+  const database = await openDatabase(dbPath);
+  if (!database) {
     emitIndexStatus(createEmptyIndexStatus({
       logFilePath: job.logFilePath,
       dbPath,
       status: 'unsupported',
       backend: 'scan',
-      error: 'SQLite is not available in this runtime.'
+      error: 'better-sqlite3 is not available in this runtime.'
     }));
     return;
   }
 
+  const { db, supportsFts } = database;
   const startByte = mode === 'append' ? baselineState.indexedBytes : 0;
   let indexedLineCount = mode === 'append' ? baselineState.indexedLineCount : 0;
   let lastProgressEmitAt = 0;
@@ -375,15 +426,17 @@ const runIndexJob = async (job, dbPath, statsSnapshot, mode, baselineState) => {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
-  const insertFtsStatement = db.prepare(`
-    INSERT INTO log_lines_fts (
-      rowid,
-      group_id,
-      title,
-      content,
-      metadata_text
-    ) VALUES (?, ?, ?, ?, ?)
-  `);
+  const insertFtsStatement = supportsFts
+    ? db.prepare(`
+      INSERT INTO log_lines_fts (
+        rowid,
+        group_id,
+        title,
+        content,
+        metadata_text
+      ) VALUES (?, ?, ?, ?, ?)
+    `)
+    : null;
 
   try {
     if (mode === 'rebuild') {
@@ -606,13 +659,13 @@ export const startLogIndexing = async (
     waitForCompletion = false
   } = {}
 ) => {
-  const SQLiteDatabaseSync = await loadSqlite();
-  if (!SQLiteDatabaseSync) {
+  const SQLiteDatabase = loadSqlite();
+  if (!SQLiteDatabase) {
     const unsupportedStatus = createEmptyIndexStatus({
       logFilePath,
       status: 'unsupported',
       backend: 'scan',
-      error: 'SQLite is not available in this runtime.'
+      error: 'better-sqlite3 is not available in this runtime.'
     });
     emitIndexStatus(unsupportedStatus);
 
@@ -638,14 +691,14 @@ export const startLogIndexing = async (
     };
   }
 
-  const db = await openDatabase(dbPath);
-  if (!db) {
+  const database = await openDatabase(dbPath);
+  if (!database) {
     const unsupportedStatus = createEmptyIndexStatus({
       logFilePath,
       dbPath,
       status: 'unsupported',
       backend: 'scan',
-      error: 'SQLite is not available in this runtime.'
+      error: 'better-sqlite3 is not available in this runtime.'
     });
     emitIndexStatus(unsupportedStatus);
 
@@ -660,8 +713,15 @@ export const startLogIndexing = async (
   let indexMode;
 
   try {
+    const { db, supportsFts } = database;
     const persistedState = getPersistedIndexState(db);
-    const resolvedMode = determineIndexMode(persistedState, stats, logFilePath, forceRebuild);
+    const resolvedMode = determineIndexMode(
+      persistedState,
+      stats,
+      logFilePath,
+      forceRebuild,
+      { db, supportsFts }
+    );
 
     baselineState = {
       indexedBytes: resolvedMode.indexedBytes,
@@ -669,7 +729,7 @@ export const startLogIndexing = async (
     };
     indexMode = resolvedMode.mode;
   } finally {
-    db.close();
+    database.db.close();
   }
 
   if (indexMode === 'ready') {
@@ -745,9 +805,178 @@ const buildFtsQuery = (query) => {
     .join(' AND ');
 };
 
+const normalizeLikeQueryTokens = (query) => (
+  query
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+);
+
+const escapeLikePattern = (token) => token.replace(/[\\%_]/g, '\\$&');
+
+const buildIndexedResults = (matchedRows, totalMatchedLines, indexedLineCount, maxGroups, maxLinesPerGroup) => {
+  const resultsByGroup = new Map();
+  let truncated = totalMatchedLines > matchedRows.length;
+
+  matchedRows.forEach((row) => {
+    let group = resultsByGroup.get(row.groupId);
+
+    if (!group) {
+      if (resultsByGroup.size >= maxGroups) {
+        truncated = true;
+        return;
+      }
+
+      group = {
+        uuid: row.groupId,
+        type: row.type || 'unknown',
+        subType: row.subType || 'unknown',
+        success: row.success === null || row.success === undefined ? null : Boolean(row.success),
+        metadata: row.metadataJson ? JSON.parse(row.metadataJson) : {},
+        title: row.title || 'Search Match',
+        entriesCount: 0,
+        firstSeen: new Date(0).toISOString(),
+        lastSeen: new Date(0).toISOString(),
+        entries: [],
+        searchMeta: {
+          isDiskSearchResult: true,
+          firstLineNumber: row.lineNumber,
+          lastLineNumber: row.lineNumber,
+          hasHiddenMatches: false
+        }
+      };
+
+      resultsByGroup.set(row.groupId, group);
+    }
+
+    group.entriesCount += 1;
+    group.searchMeta.firstLineNumber = Math.min(group.searchMeta.firstLineNumber, row.lineNumber);
+    group.searchMeta.lastLineNumber = Math.max(group.searchMeta.lastLineNumber, row.lineNumber);
+
+    if (group.entries.length < maxLinesPerGroup) {
+      group.entries.push({
+        content: row.content,
+        timestamp: new Date(0).toISOString(),
+        lineNumber: row.lineNumber
+      });
+    } else {
+      group.searchMeta.hasHiddenMatches = true;
+      truncated = true;
+    }
+  });
+
+  const shownGroups = resultsByGroup.size;
+  const shownLines = Array.from(resultsByGroup.values()).reduce((sum, group) => sum + group.entriesCount, 0);
+
+  return {
+    backend: 'sqlite',
+    results: {
+      totalEntries: shownGroups,
+      entries: Array.from(resultsByGroup.values())
+    },
+    summary: {
+      matchedLines: totalMatchedLines,
+      shownGroups,
+      scannedLines: indexedLineCount,
+      truncated: truncated || totalMatchedLines > shownLines
+    }
+  };
+};
+
+const searchIndexedWithFts = (db, ftsQuery, persistedState, maxGroups, maxLinesPerGroup) => {
+  const totalMatchedLines = db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM log_lines_fts
+    WHERE log_lines_fts MATCH ?
+  `).get(ftsQuery).count;
+
+  const matchedRows = db.prepare(`
+    SELECT
+      lines.line_number AS lineNumber,
+      lines.group_id AS groupId,
+      lines.type,
+      lines.sub_type AS subType,
+      lines.success,
+      lines.title,
+      lines.content,
+      lines.metadata_json AS metadataJson
+    FROM log_lines_fts AS fts
+    INNER JOIN log_lines AS lines
+      ON lines.id = fts.rowid
+    WHERE log_lines_fts MATCH ?
+    ORDER BY lines.line_number ASC
+    LIMIT ?
+  `).all(ftsQuery, maxGroups * maxLinesPerGroup);
+
+  return buildIndexedResults(
+    matchedRows,
+    totalMatchedLines,
+    persistedState.indexedLineCount,
+    maxGroups,
+    maxLinesPerGroup
+  );
+};
+
+const searchIndexedWithLike = (db, query, persistedState, maxGroups, maxLinesPerGroup) => {
+  const tokens = normalizeLikeQueryTokens(query);
+  if (tokens.length === 0) {
+    return {
+      success: false,
+      reason: 'unsupported_query'
+    };
+  }
+
+  const searchableExpression = `
+    lower(
+      group_id || ' ' ||
+      type || ' ' ||
+      sub_type || ' ' ||
+      title || ' ' ||
+      metadata_text || ' ' ||
+      content
+    )
+  `;
+  const conditions = tokens.map(() => `${searchableExpression} LIKE ? ESCAPE '\\'`).join(' AND ');
+  const parameters = tokens.map(token => `%${escapeLikePattern(token)}%`);
+
+  const totalMatchedLines = db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM log_lines
+    WHERE ${conditions}
+  `).get(...parameters).count;
+
+  const matchedRows = db.prepare(`
+    SELECT
+      line_number AS lineNumber,
+      group_id AS groupId,
+      type,
+      sub_type AS subType,
+      success,
+      title,
+      content,
+      metadata_json AS metadataJson
+    FROM log_lines
+    WHERE ${conditions}
+    ORDER BY line_number ASC
+    LIMIT ?
+  `).all(...parameters, maxGroups * maxLinesPerGroup);
+
+  return {
+    success: true,
+    ...buildIndexedResults(
+      matchedRows,
+      totalMatchedLines,
+      persistedState.indexedLineCount,
+      maxGroups,
+      maxLinesPerGroup
+    )
+  };
+};
+
 export const searchIndexedLogFile = async (logFilePath, query, { maxGroups = 300, maxLinesPerGroup = 200 } = {}) => {
   const ftsQuery = buildFtsQuery(query);
-  if (!ftsQuery) {
+  if (!ftsQuery && normalizeLikeQueryTokens(query).length === 0) {
     return {
       success: false,
       reason: 'unsupported_query'
@@ -755,14 +984,15 @@ export const searchIndexedLogFile = async (logFilePath, query, { maxGroups = 300
   }
 
   const dbPath = await getIndexDatabasePath(logFilePath);
-  const db = await openDatabase(dbPath);
-  if (!db) {
+  const database = await openDatabase(dbPath);
+  if (!database) {
     return {
       success: false,
       reason: 'sqlite_unavailable'
     };
   }
 
+  const { db, supportsFts } = database;
   try {
     const stats = await fs.promises.stat(logFilePath);
     const persistedState = getPersistedIndexState(db);
@@ -780,97 +1010,14 @@ export const searchIndexedLogFile = async (logFilePath, query, { maxGroups = 300
       };
     }
 
-    const totalMatchedLines = db.prepare(`
-      SELECT COUNT(*) AS count
-      FROM log_lines_fts
-      WHERE log_lines_fts MATCH ?
-    `).get(ftsQuery).count;
+    if (supportsFts && ftsQuery && isFtsIndexUsable(db)) {
+      return {
+        success: true,
+        ...searchIndexedWithFts(db, ftsQuery, persistedState, maxGroups, maxLinesPerGroup)
+      };
+    }
 
-    const matchedRows = db.prepare(`
-      SELECT
-        lines.line_number AS lineNumber,
-        lines.group_id AS groupId,
-        lines.type,
-        lines.sub_type AS subType,
-        lines.success,
-        lines.title,
-        lines.content,
-        lines.metadata_json AS metadataJson
-      FROM log_lines_fts AS fts
-      INNER JOIN log_lines AS lines
-        ON lines.id = fts.rowid
-      WHERE log_lines_fts MATCH ?
-      ORDER BY lines.line_number ASC
-      LIMIT ?
-    `).all(ftsQuery, maxGroups * maxLinesPerGroup);
-
-    const resultsByGroup = new Map();
-    let truncated = totalMatchedLines > matchedRows.length;
-
-    matchedRows.forEach((row) => {
-      let group = resultsByGroup.get(row.groupId);
-
-      if (!group) {
-        if (resultsByGroup.size >= maxGroups) {
-          truncated = true;
-          return;
-        }
-
-        group = {
-          uuid: row.groupId,
-          type: row.type || 'unknown',
-          subType: row.subType || 'unknown',
-          success: row.success === null || row.success === undefined ? null : Boolean(row.success),
-          metadata: row.metadataJson ? JSON.parse(row.metadataJson) : {},
-          title: row.title || 'Search Match',
-          entriesCount: 0,
-          firstSeen: new Date(0).toISOString(),
-          lastSeen: new Date(0).toISOString(),
-          entries: [],
-          searchMeta: {
-            isDiskSearchResult: true,
-            firstLineNumber: row.lineNumber,
-            lastLineNumber: row.lineNumber,
-            hasHiddenMatches: false
-          }
-        };
-
-        resultsByGroup.set(row.groupId, group);
-      }
-
-      group.entriesCount += 1;
-      group.searchMeta.firstLineNumber = Math.min(group.searchMeta.firstLineNumber, row.lineNumber);
-      group.searchMeta.lastLineNumber = Math.max(group.searchMeta.lastLineNumber, row.lineNumber);
-
-      if (group.entries.length < maxLinesPerGroup) {
-        group.entries.push({
-          content: row.content,
-          timestamp: new Date(0).toISOString(),
-          lineNumber: row.lineNumber
-        });
-      } else {
-        group.searchMeta.hasHiddenMatches = true;
-        truncated = true;
-      }
-    });
-
-    const shownGroups = resultsByGroup.size;
-    const shownLines = Array.from(resultsByGroup.values()).reduce((sum, group) => sum + group.entriesCount, 0);
-
-    return {
-      success: true,
-      backend: 'sqlite',
-      results: {
-        totalEntries: shownGroups,
-        entries: Array.from(resultsByGroup.values())
-      },
-      summary: {
-        matchedLines: totalMatchedLines,
-        shownGroups,
-        scannedLines: persistedState.indexedLineCount,
-        truncated: truncated || totalMatchedLines > shownLines
-      }
-    };
+    return searchIndexedWithLike(db, query, persistedState, maxGroups, maxLinesPerGroup);
   } finally {
     db.close();
   }

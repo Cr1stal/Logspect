@@ -4,6 +4,7 @@ import { builtinModules } from 'node:module';
 // a separate node_modules tree next to app.asar.
 export const mainProcessExternals = [
   'electron',
+  'better-sqlite3',
   ...builtinModules,
   ...builtinModules.map((moduleName) => `node:${moduleName}`),
 ];
