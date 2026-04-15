@@ -4,12 +4,7 @@ import { app } from 'electron';
  * Checks if we're in development mode
  * @returns {boolean}
  */
-export const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
-
-/**
- * Vite development server URL
- */
-export const VITE_DEV_SERVER_URL = 'http://localhost:5173';
+export const isDev = !app.isPackaged;
 
 /**
  * Installs Vue DevTools in development mode

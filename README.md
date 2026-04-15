@@ -15,7 +15,7 @@ A powerful Electron-based log viewer application for Ruby on Rails projects. It 
 
 ## How to use
 
-- Download the latest release from the [releases page](https://github.com/logspect/logspect/releases)
+- Download the latest release from the [releases page](https://github.com/Cr1stal/Logspect/releases)
 - Add `config.log_tags = [ :request_id ]` to your Rails application's `config/application.rb` file
 - Restart your Rails application
 - Open Logspect and select your Rails application directory
@@ -26,7 +26,7 @@ A powerful Electron-based log viewer application for Ruby on Rails projects. It 
 
 ### Prerequisites
 
-- Node.js (v16 or higher)
+- Node.js (v20 or higher recommended)
 - pnpm package manager
 - overmind (brew install overmind)
 
@@ -34,23 +34,25 @@ A powerful Electron-based log viewer application for Ruby on Rails projects. It 
 
 #### Option 1: Integrated Development (Recommended)
 
-Run both Vite dev server and Electron together:
+Run Electron Forge, which starts the Vite renderer for you:
 
 ```bash
 pnpm install
-overmind start
+pnpm start
 ```
 
 This will:
 
-1. Start the Vite development server at `http://localhost:5173`
-2. Wait for Vite to be ready, then launch Electron
-3. Enable hot module replacement for fast development
-4. Automatically open DevTools in Electron
+1. Bundle the Electron main and preload processes with Forge
+2. Start the Vite renderer at `http://localhost:5173`
+3. Launch Electron against that renderer
+4. Keep the whole app in a single dev loop
 
-#### Option 2: Manual Development
+`overmind start` still works, but it now just wraps the same integrated `pnpm start` flow.
 
-If you prefer to run them separately:
+#### Option 2: Renderer-only Development
+
+If you only want to work on the Vue UI in a browser:
 
 1. Install dependencies:
 
@@ -64,33 +66,52 @@ If you prefer to run them separately:
    pnpm dev
    ```
 
-3. In another terminal, start Electron in development mode:
-
-   ```bash
-   pnpm start
-   ```
-
 ### Building
 
-- Build the Vue.js frontend for production:
+- Build the Vue.js renderer bundle:
 
   ```bash
   pnpm build
   ```
 
-- Create Electron distribution (includes building Vue app):
+- Create Electron Forge distributables:
 
   ```bash
   pnpm dist
   ```
 
+- Create unsigned macOS release artifacts locally:
+
+  ```bash
+  pnpm dist:mac
+  ```
+
 ### Available Scripts
 
-- `pnpm dev` - Start Vite development server only
-- `pnpm start` - Start Electron in development mode
-- `pnpm build` - Build Vue.js app for production
-- `pnpm start` - Start Electron with built files
-- `pnpm dist` - Build and package Electron app
+- `pnpm start` - Start Electron Forge in development mode
+- `pnpm dev` - Start the renderer Vite server only
+- `pnpm build` - Build the renderer bundle
+- `pnpm package` - Package the Electron app without making distributables
+- `pnpm dist` - Make Electron Forge distributables
+- `pnpm dist:mac` - Build unsigned macOS release artifacts (`.dmg` and `.zip`)
+- `pnpm release` - Publish the macOS release through GitHub via Electron Forge
+
+## GitHub Releases
+
+GitHub Actions can publish an unsigned macOS release through Electron Forge.
+
+How it works:
+
+- Push a tag like `v0.5.0`, or run the `Release macOS build` workflow manually.
+- The tag must match the version in `package.json`.
+- Electron Forge makes the `.dmg` and `.zip` artifacts and publishes them to GitHub Releases.
+- No Apple Developer membership is required.
+
+Electron Forge's Vite plugin is currently documented by Forge as experimental, so future Forge minor upgrades may require small config updates.
+
+Because the app is unsigned, macOS Gatekeeper may warn users on first launch. In practice, users may need to right-click the app and choose `Open`, or allow it in `System Settings -> Privacy & Security`.
+
+Automatic in-app updates are disabled for these unsigned Forge builds. The app opens the GitHub releases page for manual downloads instead.
 
 ## Project Structure
 
@@ -102,15 +123,15 @@ If you prefer to run them separately:
   - `App.vue` - Main Vue application
   - `main.js` - Vue application entry point
   - `index.html` - Development HTML template
-- `public/` - Public assets and fallback HTML files
-- `dist/` - Built frontend files (generated)
-- `vite.config.js` - Vite configuration
-- `preload.js` - Electron preload script for secure IPC
+- `out/` - Electron Forge packaging and make artifacts (generated)
+- `vite.renderer.config.mjs` - Renderer Vite configuration used by Forge
+- `vite.main.config.mjs` / `vite.preload.config.mjs` - Vite configs for Electron main and preload bundles
+- `src/preload.js` - Electron preload script for secure IPC
 
 ## How It Works
 
-1. **Development Mode**: Electron loads the Vue app from the Vite dev server (`http://localhost:5173`) with hot reload
-2. **Production Mode**: Electron loads the built Vue app from the `dist` folder
+1. **Development Mode**: Electron Forge starts Vite and loads the renderer from `http://localhost:5173`
+2. **Production Mode**: Electron Forge packages the bundled main, preload, and renderer assets together
 3. **Rails Integration**: Select a Rails project directory to monitor `log/development.log`
 4. **Real-time Updates**: Log entries are parsed and grouped by request ID, then streamed to the Vue frontend
 
@@ -119,8 +140,7 @@ If you prefer to run them separately:
 - **Frontend**: Vue.js 3, Vite
 - **Desktop**: Electron
 - **Package Manager**: pnpm
-- **Build Tool**: electron-builder
-- **Development**: concurrently, wait-on, cross-env
+- **Build Tool**: Electron Forge + Vite
 
 ## License
 

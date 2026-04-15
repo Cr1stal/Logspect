@@ -7,17 +7,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Development Setup:**
 
 - `pnpm install` - Install dependencies
-- `overmind start` - Start both Vite dev server and Electron app (recommended)
-- `pnpm dev` - Start Vite development server only
-- `pnpm start` - Start Electron in development mode
+- `pnpm start` - Start Electron Forge with the integrated Vite renderer (recommended)
+- `overmind start` - Run the same integrated dev flow via `Procfile.dev`
+- `pnpm dev` - Start the renderer Vite server only
 
 **Building:**
 
-- `pnpm build` - Build Vue.js frontend for production
-- `pnpm dist` - Build and package Electron app
-- `pnpm release` - Full release build with publishing
+- `pnpm build` - Build the renderer bundle only
+- `pnpm dist` - Create Electron Forge distributables
+- `pnpm dist:mac` - Build macOS `.dmg` and `.zip` artifacts
+- `pnpm release` - Publish the macOS release through Electron Forge
 
-**No test framework is currently configured** - tests would need to be set up if testing is required.
+**Tests are configured with Vitest** - use `pnpm test` or `pnpm test:run`.
 
 ## Architecture Overview
 
@@ -57,10 +58,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Build Configuration
 
-- **Vite** builds Vue frontend to `public/` directory
-- **electron-builder** packages the complete app
-- Development uses Vite dev server with hot reload
-- Production loads built files from `public/`
+- **Electron Forge** packages and publishes the app
+- **Forge's Vite plugin** bundles the Electron main, preload, and renderer processes
+- Development uses the integrated Forge + Vite workflow
+- Production artifacts are emitted under `out/`
 
 ### Key Data Structures
 
