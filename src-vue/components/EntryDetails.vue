@@ -22,7 +22,7 @@
           @mouseleave="clearCopyText"
         >
           <div class="log-content">{{ entry.content }}</div>
-          <div class="group-hover:opacity-100 opacity-0 text-xs text-green-300 log-timestamp">{{ copyText }}</div>
+          <div class="group-hover:opacity-100 opacity-0 text-xs text-green-300 log-timestamp">{{ entryMeta(entry) }}</div>
         </div>
       </div>
     </div>
@@ -63,6 +63,13 @@ export default {
     },
     sortedEntries() {
       if (!this.selectedEntry || !this.selectedEntry.entries) return [];
+      const hasLineNumbers = this.selectedEntry.entries.length > 0 &&
+        this.selectedEntry.entries.every(entry => typeof entry.lineNumber === 'number')
+
+      if ((this.selectedEntry.searchMeta?.isDiskSearchResult || this.selectedEntry.indexMeta?.isIndexedViewResult) && hasLineNumbers) {
+        return [...this.selectedEntry.entries].sort((a, b) => (a.lineNumber || 0) - (b.lineNumber || 0));
+      }
+
       // Return entries sorted in ascending order (oldest first)
       return [...this.selectedEntry.entries].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
     }
@@ -86,6 +93,13 @@ export default {
       if (this.$refs.detailsContent) {
         this.$refs.detailsContent.scrollTop = 0;
       }
+    },
+    entryMeta(entry) {
+      if (entry.lineNumber) {
+        return `Line ${entry.lineNumber} • ${this.copyText}`;
+      }
+
+      return this.copyText;
     },
     copyToClipboard(text) {
       navigator.clipboard.writeText(text);

@@ -4,6 +4,20 @@ import log from "electron-log";
 import { prepareProject } from './projectManager.js';
 import { startWatching, getWatchingStatus } from './logWatcher.js';
 import { getFormattedLogData, clearAllLogData } from './logStorage.js';
+import {
+  cancelLogIndexing,
+  getIndexedLogViewPage,
+  getIndexedLogViewState,
+  getLogIndexStatus,
+  setLogIndexStatusCallback,
+  startLogIndexing
+} from './logIndex.js';
+import {
+  cancelActiveLogSearch,
+  searchLogFile,
+  setLogSearchResultsCallback,
+  setLogSearchStatusCallback
+} from './logSearch.js';
 import { getRecentProjects, addRecentProject, removeRecentProject, clearRecentProjects } from './recentProjects.js';
 
 // Reference to main window for sending data
@@ -15,6 +29,24 @@ let mainWindow = null;
  */
 export const setMainWindow = (window) => {
   mainWindow = window;
+
+  setLogSearchStatusCallback((searchStatus) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('log-search-status', searchStatus);
+    }
+  });
+
+  setLogSearchResultsCallback((searchResults) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('log-search-results', searchResults);
+    }
+  });
+
+  setLogIndexStatusCallback((indexStatus) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('log-index-status', indexStatus);
+    }
+  });
 };
 
 /**
@@ -65,13 +97,28 @@ export const setupIpcHandlers = () => {
   });
 
   const activateProjectSelection = async (projectResult) => {
+    cancelActiveLogSearch();
+    cancelLogIndexing();
+
     const watchingStatus = getWatchingStatus();
     const isSameSource = projectDirectory === projectResult.projectPath &&
       watchingStatus.logFilePath === projectResult.logPath;
+    const indexedViewState = isSameSource
+      ? { success: false }
+      : await getIndexedLogViewState(projectResult.logPath).catch((error) => {
+        log.warn('Failed to read indexed log view state:', error);
+        return { success: false };
+      });
 
     const watchResult = (isSameSource && watchingStatus.isWatching)
       ? { success: true }
-      : await startWatching(projectResult.logPath);
+      : await startWatching(projectResult.logPath, indexedViewState.success
+        ? {
+            startOffset: indexedViewState.coveredBytes,
+            loadExistingContent: indexedViewState.coveredBytes < indexedViewState.totalBytes,
+            startOffsetAtLineBoundary: true
+          }
+        : undefined);
 
     if (!watchResult.success) {
       return {
@@ -95,6 +142,8 @@ export const setupIpcHandlers = () => {
       updatedWatchingStatus.isWatching,
       availableLogFiles
     );
+
+    void startLogIndexing(projectResult.logPath);
 
     return buildProjectResponse(projectResult, updatedWatchingStatus.isWatching);
   };
@@ -161,6 +210,51 @@ export const setupIpcHandlers = () => {
       availableLogFiles: availableLogFiles,
       hasProject: !!projectDirectory
     };
+  });
+
+  ipcMain.handle('start-log-search', async (event, query) => {
+    try {
+      const watchingStatus = getWatchingStatus();
+      if (!projectDirectory || !watchingStatus.logFilePath) {
+        return {
+          success: false,
+          message: 'Select a Rails project before searching the log file.'
+        };
+      }
+
+      return await searchLogFile(watchingStatus.logFilePath, query);
+    } catch (error) {
+      console.error('Error starting log search:', error);
+      return {
+        success: false,
+        message: `Error: ${error.message}`
+      };
+    }
+  });
+
+  ipcMain.handle('cancel-log-search', () => {
+    try {
+      return cancelActiveLogSearch();
+    } catch (error) {
+      console.error('Error cancelling log search:', error);
+      return {
+        success: false,
+        message: `Error: ${error.message}`
+      };
+    }
+  });
+
+  ipcMain.handle('get-log-index-status', () => {
+    try {
+      return getLogIndexStatus();
+    } catch (error) {
+      console.error('Error getting log index status:', error);
+      return {
+        logFilePath: '',
+        status: 'error',
+        error: error.message
+      };
+    }
   });
 
   // Handler to refresh available log files for the current project
@@ -279,6 +373,38 @@ export const setupIpcHandlers = () => {
   // Handler for when renderer requests log data
   ipcMain.handle('get-log-data', () => {
     return getFormattedLogData();
+  });
+
+  ipcMain.handle('get-log-view-page', async (event, options = {}) => {
+    try {
+      const watchingStatus = getWatchingStatus();
+      if (!projectDirectory || !watchingStatus.logFilePath) {
+        return {
+          success: false,
+          message: 'Select a Rails project before loading log entries.'
+        };
+      }
+
+      const result = await getIndexedLogViewPage(watchingStatus.logFilePath, options);
+      if (!result.success) {
+        return {
+          success: true,
+          mode: 'live'
+        };
+      }
+
+      return {
+        success: true,
+        mode: 'indexed',
+        ...result
+      };
+    } catch (error) {
+      console.error('Error loading indexed log page:', error);
+      return {
+        success: false,
+        message: `Error: ${error.message}`
+      };
+    }
   });
 
   // Handler to clear all log data

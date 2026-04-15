@@ -1,15 +1,19 @@
 <template>
   <div class="entries-panel">
     <div class="panel-header">
-      Entries ({{ displayedEntries.length }})
+      {{ listLabel }} ({{ displayedEntries.length }})
     </div>
 
-    <div class="entries-list">
-      <div v-if="totalEntries === 0" class="empty-state">
+    <div
+      ref="entriesList"
+      class="entries-list"
+      @scroll="handleScroll"
+    >
+      <div v-if="displayedEntries.length === 0" class="empty-state">
         <div class="empty-icon">
           <FileText :size="48" class="opacity-50" />
         </div>
-        <div>No log entries detected yet</div>
+        <div>{{ emptyMessage }}</div>
       </div>
 
       <div
@@ -25,8 +29,8 @@
           <div class="entry-title-text">{{ entry.title }}</div>
           <div class="entry-uuid">{{ entry.uuid }}</div>
           <div class="entry-meta">
-            <span class="entry-count">{{ entry.entriesCount }} entries</span>
-            <span>{{ formatTime(entry.lastSeen) }}</span>
+            <span class="entry-count">{{ formatEntryCount(entry) }}</span>
+            <span>{{ formatEntryPosition(entry) }}</span>
           </div>
           <div v-if="Object.keys(entry.metadata || {}).length > 0" class="entry-metadata">
             <span v-if="entry.metadata.responseTime" class="metadata-item">
@@ -41,6 +45,10 @@
             </span>
           </div>
         </div>
+      </div>
+
+      <div v-if="isLoadingMore" class="entries-loading">
+        Loading more entries...
       </div>
     </div>
   </div>
@@ -79,6 +87,26 @@ export default {
     activeCategories: {
       type: Array,
       default: () => ['all']
+    },
+    searchMode: {
+      type: String,
+      default: 'local'
+    },
+    emptyMessage: {
+      type: String,
+      default: 'No log entries detected yet'
+    },
+    listLabel: {
+      type: String,
+      default: 'Entries'
+    },
+    canLoadMore: {
+      type: Boolean,
+      default: false
+    },
+    isLoadingMore: {
+      type: Boolean,
+      default: false
     }
   },
   data() {
@@ -100,7 +128,7 @@ export default {
 
       // Apply search filter
       const searchTerm = this.searchTerm.trim();
-      if (searchTerm) {
+      if (this.searchMode === 'local' && searchTerm) {
         if (this.miniSearch && this.searchResults.length > 0) {
           // Use MiniSearch results
           const searchResultUuids = new Set(this.searchResults.map(result => result.id));
@@ -118,9 +146,7 @@ export default {
 
       // Apply sorting
       const sorted = [...filteredEntries].sort((a, b) => {
-        const dateA = new Date(a.firstSeen);
-        const dateB = new Date(b.firstSeen);
-        return this.invertOrder ? dateB - dateA : dateA - dateB;
+        return this.compareEntries(a, b)
       });
 
       return sorted;
@@ -128,17 +154,77 @@ export default {
   },
   watch: {
     entries: {
-      handler: 'rebuildSearchIndex',
+      handler() {
+        if (this.searchMode === 'local') {
+          this.rebuildSearchIndex()
+        } else {
+          this.searchResults = []
+        }
+      },
       deep: true
     },
     searchTerm: {
-      handler: 'performSearch'
+      handler() {
+        if (this.searchMode === 'local') {
+          this.performSearch()
+        } else {
+          this.searchResults = []
+        }
+      }
+    },
+    searchMode(nextMode) {
+      if (nextMode === 'local') {
+        this.initializeSearch()
+      } else {
+        this.searchResults = []
+      }
     }
   },
   mounted() {
-    this.initializeSearch();
+    if (this.searchMode === 'local') {
+      this.initializeSearch();
+    }
   },
   methods: {
+    getEntryLineMeta(entry) {
+      if (entry.searchMeta?.isDiskSearchResult) {
+        return {
+          firstLineNumber: entry.searchMeta.firstLineNumber,
+          lastLineNumber: entry.searchMeta.lastLineNumber
+        }
+      }
+
+      if (entry.indexMeta?.isIndexedViewResult) {
+        return {
+          firstLineNumber: entry.indexMeta.firstLineNumber,
+          lastLineNumber: entry.indexMeta.lastLineNumber
+        }
+      }
+
+      return null
+    },
+    compareEntries(a, b) {
+      const lineMetaA = this.getEntryLineMeta(a)
+      const lineMetaB = this.getEntryLineMeta(b)
+
+      if (lineMetaA && lineMetaB) {
+        return this.invertOrder
+          ? lineMetaB.lastLineNumber - lineMetaA.lastLineNumber
+          : lineMetaA.lastLineNumber - lineMetaB.lastLineNumber
+      }
+
+      if (lineMetaA || lineMetaB) {
+        if (this.invertOrder) {
+          return lineMetaA ? 1 : -1
+        }
+
+        return lineMetaA ? -1 : 1
+      }
+
+      const dateA = new Date(a.firstSeen);
+      const dateB = new Date(b.firstSeen);
+      return this.invertOrder ? dateB - dateA : dateA - dateB;
+    },
     initializeSearch() {
       // Initialize MiniSearch with configuration optimized for log data
       this.miniSearch = new MiniSearch({
@@ -173,7 +259,7 @@ export default {
       this.rebuildSearchIndex();
     },
     rebuildSearchIndex() {
-      if (!this.miniSearch || !this.entries.length) return;
+      if (this.searchMode !== 'local' || !this.miniSearch || !this.entries.length) return;
 
       try {
         // Clear existing index
@@ -200,7 +286,7 @@ export default {
       }
     },
     performSearch() {
-      if (!this.miniSearch || !this.searchTerm.trim()) {
+      if (this.searchMode !== 'local' || !this.miniSearch || !this.searchTerm.trim()) {
         this.searchResults = [];
         return;
       }
@@ -227,9 +313,51 @@ export default {
     },
     formatTime(timestamp) {
       return new Date(timestamp).toLocaleTimeString();
+    },
+    formatEntryCount(entry) {
+      if (entry.searchMeta?.isDiskSearchResult) {
+        const matchedLineCount = entry.searchMeta.matchedLineCount ?? entry.entriesCount
+        if (matchedLineCount === entry.entriesCount) {
+          return `${matchedLineCount} matches`
+        }
+
+        return `${matchedLineCount} matches • ${entry.entriesCount} entries`
+      }
+
+      return `${entry.entriesCount} entries`
+    },
+    formatEntryPosition(entry) {
+      const lineMeta = this.getEntryLineMeta(entry)
+      if (lineMeta) {
+        const { firstLineNumber, lastLineNumber } = lineMeta
+        return firstLineNumber === lastLineNumber
+          ? `Line ${firstLineNumber}`
+          : `Lines ${firstLineNumber}-${lastLineNumber}`
+      }
+
+      return this.formatTime(entry.lastSeen)
+    },
+    handleScroll() {
+      if (!this.canLoadMore || this.isLoadingMore) {
+        return
+      }
+
+      const entriesList = this.$refs.entriesList
+      if (!entriesList) {
+        return
+      }
+
+      const threshold = 96
+      const shouldLoadMore = this.invertOrder
+        ? entriesList.scrollTop + entriesList.clientHeight >= entriesList.scrollHeight - threshold
+        : entriesList.scrollTop <= threshold
+
+      if (shouldLoadMore) {
+        this.$emit('load-more')
+      }
     }
   },
-  emits: ['select-entry']
+  emits: ['select-entry', 'load-more']
 }
 </script>
 
@@ -246,6 +374,10 @@ export default {
 
 .entries-list {
   @apply flex-1 overflow-y-auto h-0;
+}
+
+.entries-loading {
+  @apply px-4 py-3 text-xs text-slate-400 border-t border-slate-700;
 }
 
 .entry-item {

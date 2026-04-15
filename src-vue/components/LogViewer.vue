@@ -8,11 +8,11 @@
       :selectedLogFilePath="logStore.selectedLogFilePath"
       :availableLogFiles="logStore.availableLogFiles"
       :isWatching="logStore.isWatching"
-      :totalRequests="logStore.logData.totalEntries"
+      :totalRequests="logStore.viewerLogData.totalEntries"
       :totalEntries="logStore.totalLogEntries"
       :autoScroll="logStore.autoScroll"
       :isRefreshing="logStore.isRefreshing"
-      :searchTerm="searchTerm"
+      :searchTerm="logStore.searchDraft"
       :invertOrder="invertOrder"
       :activeCategories="activeCategories"
       @select-project="logStore.selectProject"
@@ -24,8 +24,25 @@
       @toggle-auto-scroll="logStore.toggleAutoScroll"
       @toggle-watching="logStore.toggleWatching"
       @update-search="updateSearch"
+      @submit-search="logStore.submitSearch"
       @toggle-invert="toggleInvert"
       @toggle-category="toggleCategory"
+    />
+
+    <SearchStatus
+      v-if="logStore.isDiskSearchVisible"
+      :query="logStore.diskSearch.query || logStore.searchTerm.trim()"
+      :backend="logStore.diskSearch.backend"
+      :status="logStore.diskSearch.status"
+      :progressPercent="logStore.diskSearch.progressPercent"
+      :bytesProcessed="logStore.diskSearch.bytesProcessed"
+      :totalBytes="logStore.diskSearch.totalBytes"
+      :matchedLines="logStore.diskSearch.matchedLines"
+      :shownGroups="logStore.diskSearch.shownGroups"
+      :truncated="logStore.diskSearch.truncated"
+      :error="logStore.diskSearch.error"
+      @stop-search="logStore.stopSearch"
+      @clear-search="logStore.clearSearch"
     />
 
     <!-- Main Container -->
@@ -33,13 +50,19 @@
       <!-- Console Interface -->
       <div class="console-interface">
         <EntryList
-          :entries="logStore.logData.entries"
-          :totalEntries="logStore.logData.totalEntries"
+          :entries="logStore.displayedLogData.entries"
+          :totalEntries="logStore.displayedLogData.totalEntries"
           :selectedUuid="logStore.selectedUuid"
-          :searchTerm="searchTerm"
+          :searchTerm="logStore.searchTerm"
           :invertOrder="invertOrder"
           :activeCategories="activeCategories"
+          :searchMode="logStore.isDiskSearchVisible ? 'disk' : 'local'"
+          :emptyMessage="entryListEmptyMessage"
+          :listLabel="logStore.isDiskSearchVisible ? 'Matches' : 'Entries'"
+          :canLoadMore="logStore.canLoadMoreEntries"
+          :isLoadingMore="logStore.isLoadingMoreEntries"
           @select-entry="logStore.selectEntry"
+          @load-more="logStore.loadMoreEntries"
         />
 
         <EntryDetails
@@ -52,8 +75,9 @@
 
     <!-- Footer -->
     <Footer
-      :totalRequests="logStore.logData.totalEntries"
+      :totalRequests="logStore.viewerLogData.totalEntries"
       :totalEntries="logStore.totalLogEntries"
+      :indexStatus="logStore.logIndex"
     />
   </div>
 </template>
@@ -64,6 +88,7 @@ import Toolbar from './Toolbar.vue'
 import EntryList from './EntryList.vue'
 import EntryDetails from './EntryDetails.vue'
 import Footer from './Footer.vue'
+import SearchStatus from './SearchStatus.vue'
 
 export default {
   name: 'LogViewer',
@@ -71,14 +96,8 @@ export default {
     Toolbar,
     EntryList,
     EntryDetails,
-    Footer
-  },
-  data() {
-    return {
-      searchTerm: '',
-      invertOrder: false,
-      activeCategories: ['all']
-    }
+    Footer,
+    SearchStatus
   },
   setup() {
     const logStore = useLogStore()
@@ -87,9 +106,32 @@ export default {
       logStore
     }
   },
+  data() {
+    return {
+      invertOrder: false,
+      activeCategories: ['all']
+    }
+  },
+  computed: {
+    entryListEmptyMessage() {
+      if (!this.logStore.isDiskSearchVisible) {
+        return 'No log entries detected yet'
+      }
+
+      if (this.logStore.isDiskSearchRunning) {
+        return 'Searching the whole file...'
+      }
+
+      if (this.logStore.diskSearch.status === 'error') {
+        return this.logStore.diskSearch.error || 'Search failed.'
+      }
+
+      return `No matches found for "${this.logStore.searchTerm.trim()}"`
+    }
+  },
   methods: {
     updateSearch(term) {
-      this.searchTerm = term;
+      void this.logStore.updateSearchDraft(term)
     },
     toggleInvert(invert) {
       this.invertOrder = invert;
