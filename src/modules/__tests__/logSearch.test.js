@@ -139,10 +139,12 @@ describe('logSearch', () => {
     expect(finalResults.entries[0].searchMeta).toMatchObject({
       isDiskSearchResult: true,
       matchedLineCount: 1,
+      matchedLineNumbers: [3],
       firstLineNumber: 3,
       lastLineNumber: 3
     });
     expect(finalResults.entries[0].entries.map(entry => entry.lineNumber)).toEqual([2, 3]);
+    expect(finalResults.entries[0].entries.map(entry => entry.isMatch)).toEqual([false, true]);
   });
 
   it('returns the full matched group instead of only the matching lines', async () => {
@@ -160,12 +162,14 @@ describe('logSearch', () => {
     expect(finalResults.entries[0].entriesCount).toBe(3);
     expect(finalResults.entries[0].searchMeta).toMatchObject({
       matchedLineCount: 1,
+      matchedLineNumbers: [3],
       firstLineNumber: 3,
       lastLineNumber: 3,
       groupFirstLineNumber: 1,
       groupLastLineNumber: 3
     });
     expect(finalResults.entries[0].entries.map(entry => entry.lineNumber)).toEqual([1, 2, 3]);
+    expect(finalResults.entries[0].entries.map(entry => entry.isMatch)).toEqual([false, false, true]);
   });
 
   it('falls back to a stream scan when indexed search throws unexpectedly', async () => {

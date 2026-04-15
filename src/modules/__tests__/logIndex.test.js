@@ -114,12 +114,14 @@ describe('logIndex', () => {
     expect(result.results.entries[0].entriesCount).toBe(2);
     expect(result.results.entries[0].searchMeta).toMatchObject({
       matchedLineCount: 1,
+      matchedLineNumbers: [2],
       firstLineNumber: 2,
       lastLineNumber: 2,
       groupFirstLineNumber: 1,
       groupLastLineNumber: 2
     });
     expect(result.results.entries[0].entries.map(entry => entry.lineNumber)).toEqual([1, 2]);
+    expect(result.results.entries[0].entries.map(entry => entry.isMatch)).toEqual([false, true]);
   });
 
   it('appends new lines into the existing index on subsequent runs', async () => {
@@ -214,11 +216,13 @@ describe('logIndex', () => {
     expect(result.results.entries[0].entriesCount).toBe(3);
     expect(result.results.entries[0].searchMeta).toMatchObject({
       matchedLineCount: 1,
+      matchedLineNumbers: [3],
       firstLineNumber: 3,
       lastLineNumber: 3,
       groupFirstLineNumber: 1,
       groupLastLineNumber: 3
     });
     expect(result.results.entries[0].entries.map(entry => entry.lineNumber)).toEqual([1, 2, 3]);
+    expect(result.results.entries[0].entries.map(entry => entry.isMatch)).toEqual([false, false, true]);
   });
 });

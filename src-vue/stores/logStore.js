@@ -129,6 +129,56 @@ const sortEntryItems = (entry) => {
   return entries.sort((left, right) => new Date(left.timestamp) - new Date(right.timestamp))
 }
 
+const buildMatchedContentCounts = (searchEntry) => {
+  const counts = new Map()
+  const matchedLineNumbers = new Set(searchEntry?.searchMeta?.matchedLineNumbers || [])
+
+  ;(searchEntry?.entries || []).forEach((entry) => {
+    const isMatch = entry.isMatch || (
+      typeof entry.lineNumber === 'number' && matchedLineNumbers.has(entry.lineNumber)
+    )
+
+    if (!isMatch) {
+      return
+    }
+
+    counts.set(entry.content, (counts.get(entry.content) || 0) + 1)
+  })
+
+  return counts
+}
+
+const applySearchMatchMetadata = (entries = [], searchEntry = null) => {
+  if (!searchEntry?.searchMeta?.matchedLineCount) {
+    return entries.map((entry) => ({
+      ...entry,
+      isMatch: Boolean(entry.isMatch)
+    }))
+  }
+
+  const matchedLineNumbers = new Set(searchEntry.searchMeta.matchedLineNumbers || [])
+  const matchedContentCounts = buildMatchedContentCounts(searchEntry)
+
+  return entries.map((entry) => {
+    let isMatch = Boolean(entry.isMatch)
+
+    if (!isMatch && typeof entry.lineNumber === 'number' && matchedLineNumbers.has(entry.lineNumber)) {
+      isMatch = true
+    } else if (!isMatch) {
+      const remainingMatches = matchedContentCounts.get(entry.content) || 0
+      if (remainingMatches > 0) {
+        isMatch = true
+        matchedContentCounts.set(entry.content, remainingMatches - 1)
+      }
+    }
+
+    return {
+      ...entry,
+      isMatch
+    }
+  })
+}
+
 export const useLogStore = defineStore('log', {
   state: () => ({
     // Project state
@@ -221,9 +271,11 @@ export const useLogStore = defineStore('log', {
           }
         : displayedEntry
 
+      const sortedEntries = sortEntryItems(resolvedEntry)
+
       return {
         ...resolvedEntry,
-        entries: sortEntryItems(resolvedEntry)
+        entries: applySearchMatchMetadata(sortedEntries, displayedEntry)
       }
     },
 

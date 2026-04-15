@@ -1060,6 +1060,14 @@ const normalizeLikeQueryTokens = (query) => (
 
 const escapeLikePattern = (token) => token.replace(/[\\%_]/g, '\\$&');
 
+const parseMatchedLineNumbers = (value) => (
+  String(value || '')
+    .split(',')
+    .map(candidate => Number(candidate))
+    .filter(candidate => Number.isInteger(candidate))
+    .sort((left, right) => left - right)
+);
+
 const buildIndexedResults = (
   groupRows,
   {
@@ -1077,7 +1085,8 @@ const buildIndexedResults = (
       {
         firstLineNumber: group.firstMatchedLineNumber,
         lastLineNumber: group.lastMatchedLineNumber,
-        matchedLineCount: group.matchedLineCount
+        matchedLineCount: group.matchedLineCount,
+        matchedLineNumbers: parseMatchedLineNumbers(group.matchedLineNumbers)
       }
     ])
   );
@@ -1113,6 +1122,7 @@ const buildIndexedResults = (
           groupFirstLineNumber: row.lineNumber,
           groupLastLineNumber: row.lineNumber,
           matchedLineCount: matchedGroup.matchedLineCount,
+          matchedLineNumbers: [...matchedGroup.matchedLineNumbers],
           hasHiddenMatches: false
         }
       };
@@ -1135,7 +1145,8 @@ const buildIndexedResults = (
     group.entries.push({
       content: row.content,
       timestamp: DISK_SEARCH_TIMESTAMP,
-      lineNumber: row.lineNumber
+      lineNumber: row.lineNumber,
+      isMatch: matchedGroup.matchedLineNumbers.includes(row.lineNumber)
     });
   });
 
@@ -1275,7 +1286,8 @@ const searchIndexedWithFts = (db, ftsQuery, persistedState, maxGroups) => {
       lines.group_id AS groupId,
       MIN(lines.line_number) AS firstMatchedLineNumber,
       MAX(lines.line_number) AS lastMatchedLineNumber,
-      COUNT(*) AS matchedLineCount
+      COUNT(*) AS matchedLineCount,
+      GROUP_CONCAT(lines.line_number) AS matchedLineNumbers
     FROM log_lines_fts AS fts
     INNER JOIN log_lines AS lines
       ON lines.id = fts.rowid
@@ -1334,7 +1346,8 @@ const searchIndexedWithLike = (db, query, persistedState, maxGroups) => {
       group_id AS groupId,
       MIN(line_number) AS firstMatchedLineNumber,
       MAX(line_number) AS lastMatchedLineNumber,
-      COUNT(*) AS matchedLineCount
+      COUNT(*) AS matchedLineCount,
+      GROUP_CONCAT(line_number) AS matchedLineNumbers
     FROM log_lines
     WHERE ${conditions}
     GROUP BY group_id
