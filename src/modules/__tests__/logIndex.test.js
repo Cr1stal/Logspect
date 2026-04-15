@@ -149,6 +149,51 @@ describe('logIndex', () => {
     expect(result.results.entries[0].entries[0].lineNumber).toBe(2);
   });
 
+  it('does not duplicate lines when append indexing overlaps already indexed content', async () => {
+    const firstLine = '[aa32797f-b087-4d45-9d99-28198952a784] INFO: request booted';
+    const secondLine = '[aa32797f-b087-4d45-9d99-28198952a784] DEBUG: rendering response';
+    const thirdLine = '[aa32797f-b087-4d45-9d99-28198952a784] ERROR: callback timeout';
+    const { directoryPath, logFilePath } = await createTempLogFile([
+      firstLine,
+      secondLine,
+      thirdLine
+    ].join('\n'));
+
+    const status = await waitForIndexReady(logFilePath, directoryPath);
+    const { default: Database } = await import('better-sqlite3');
+    const db = new Database(status.dbPath);
+    const stats = await fs.promises.stat(logFilePath);
+
+    db.prepare(`
+      UPDATE index_state
+      SET
+        indexed_bytes = ?,
+        indexed_line_count = ?,
+        file_size = ?,
+        file_mtime_ms = ?,
+        status = 'ready'
+      WHERE id = 1
+    `).run(
+      Buffer.byteLength(`${firstLine}\n`, 'utf8'),
+      1,
+      stats.size,
+      stats.mtimeMs
+    );
+    db.close();
+
+    await waitForIndexReady(logFilePath, directoryPath);
+
+    const { searchIndexedLogFile, setLogIndexStorageDirectory } = await import('../logIndex.js');
+    setLogIndexStorageDirectory(directoryPath);
+
+    const result = await searchIndexedLogFile(logFilePath, 'callback timeout');
+
+    expect(result.success).toBe(true);
+    expect(result.results.entries[0].entriesCount).toBe(3);
+    expect(result.results.entries[0].entries.map(entry => entry.lineNumber)).toEqual([1, 2, 3]);
+    expect(result.results.entries[0].entries.map(entry => entry.isMatch)).toEqual([false, false, true]);
+  });
+
   it('falls back to plain SQLite search when the FTS table is unavailable', async () => {
     const { directoryPath, logFilePath } = await createTempLogFile([
       '[aa32797f-b087-4d45-9d99-28198952a784] INFO: callback booted',
@@ -224,5 +269,88 @@ describe('logIndex', () => {
     });
     expect(result.results.entries[0].entries.map(entry => entry.lineNumber)).toEqual([1, 2, 3]);
     expect(result.results.entries[0].entries.map(entry => entry.isMatch)).toEqual([false, false, true]);
+  });
+
+  it('rebuilds a corrupted index from scratch when forceRebuild is requested', async () => {
+    const { directoryPath, logFilePath } = await createTempLogFile([
+      '[aa32797f-b087-4d45-9d99-28198952a784] INFO: request booted',
+      '[aa32797f-b087-4d45-9d99-28198952a784] DEBUG: rendering response',
+      '[aa32797f-b087-4d45-9d99-28198952a784] ERROR: callback timeout'
+    ].join('\n'));
+
+    const status = await waitForIndexReady(logFilePath, directoryPath);
+    const { default: Database } = await import('better-sqlite3');
+    const db = new Database(status.dbPath);
+    const originalMaxId = db.prepare('SELECT MAX(id) AS id FROM log_lines').get().id;
+
+    db.exec(`
+      INSERT INTO log_lines (
+        line_number,
+        group_id,
+        type,
+        sub_type,
+        success,
+        title,
+        content,
+        metadata_json,
+        metadata_text
+      )
+      SELECT
+        line_number,
+        group_id,
+        type,
+        sub_type,
+        success,
+        title,
+        content,
+        metadata_json,
+        metadata_text
+      FROM log_lines
+    `);
+    db.prepare(`
+      INSERT INTO log_lines_fts (
+        rowid,
+        group_id,
+        title,
+        content,
+        metadata_text
+      )
+      SELECT
+        id,
+        group_id,
+        title,
+        content,
+        metadata_text
+      FROM log_lines
+      WHERE id > ?
+    `).run(originalMaxId);
+    db.close();
+
+    const {
+      getIndexedLogViewPage,
+      startLogIndexing,
+      searchIndexedLogFile,
+      setLogIndexStorageDirectory
+    } = await import('../logIndex.js');
+    setLogIndexStorageDirectory(directoryPath);
+
+    await startLogIndexing(logFilePath, {
+      forceRebuild: true,
+      waitForCompletion: true
+    });
+
+    const searchResult = await searchIndexedLogFile(logFilePath, 'callback timeout');
+    const viewerResult = await getIndexedLogViewPage(logFilePath, { limit: 20 });
+
+    expect(searchResult.success).toBe(true);
+    expect(searchResult.summary.matchedLines).toBe(1);
+    expect(searchResult.results.entries[0].entriesCount).toBe(3);
+    expect(searchResult.results.entries[0].searchMeta.matchedLineCount).toBe(1);
+    expect(searchResult.results.entries[0].entries.map(entry => entry.lineNumber)).toEqual([1, 2, 3]);
+    expect(searchResult.results.entries[0].entries.map(entry => entry.isMatch)).toEqual([false, false, true]);
+
+    expect(viewerResult.success).toBe(true);
+    expect(viewerResult.page.entries[0].entriesCount).toBe(3);
+    expect(viewerResult.page.entries[0].entries.map(entry => entry.lineNumber)).toEqual([1, 2, 3]);
   });
 });

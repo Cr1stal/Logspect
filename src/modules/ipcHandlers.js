@@ -257,6 +257,33 @@ export const setupIpcHandlers = () => {
     }
   });
 
+  ipcMain.handle('rebuild-log-index', async () => {
+    try {
+      const watchingStatus = getWatchingStatus();
+      if (!projectDirectory || !watchingStatus.logFilePath) {
+        return {
+          success: false,
+          message: 'Select a Rails project before rebuilding the log index.'
+        };
+      }
+
+      const result = await startLogIndexing(watchingStatus.logFilePath, {
+        forceRebuild: true
+      });
+
+      return {
+        success: true,
+        status: result.status || getLogIndexStatus()
+      };
+    } catch (error) {
+      console.error('Error rebuilding log index:', error);
+      return {
+        success: false,
+        message: `Error: ${error.message}`
+      };
+    }
+  });
+
   // Handler to refresh available log files for the current project
   ipcMain.handle('get-project-log-files', async () => {
     try {

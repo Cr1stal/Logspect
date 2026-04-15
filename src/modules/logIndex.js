@@ -4,7 +4,9 @@ import { createRequire } from 'node:module';
 import os from 'os';
 import path from 'path';
 import readline from 'node:readline';
+import { fileURLToPath } from 'node:url';
 import util from 'node:util';
+import { Worker } from 'node:worker_threads';
 import log from 'electron-log';
 import { extractLogInfo, jidRegex, uuidRegex } from './logParser.js';
 
@@ -57,6 +59,34 @@ const createEmptyIndexStatus = (overrides = {}) => ({
 
 let currentIndexStatus = createEmptyIndexStatus();
 
+const buildIndexStatus = ({
+  logFilePath,
+  dbPath = '',
+  status,
+  totalBytes = 0,
+  bytesIndexed = 0,
+  indexedLines = 0,
+  backend = 'sqlite',
+  error = null
+}) => {
+  const safeTotalBytes = Math.max(0, totalBytes);
+  const safeBytesIndexed = Math.min(Math.max(0, bytesIndexed), safeTotalBytes);
+
+  return createEmptyIndexStatus({
+    logFilePath,
+    dbPath,
+    status,
+    progressPercent: safeTotalBytes === 0
+      ? 100
+      : Math.min(100, Math.round((safeBytesIndexed / safeTotalBytes) * 100)),
+    bytesIndexed: safeBytesIndexed,
+    totalBytes: safeTotalBytes,
+    indexedLines,
+    backend,
+    error
+  });
+};
+
 const emitIndexStatus = (payload) => {
   currentIndexStatus = payload;
 
@@ -69,6 +99,21 @@ const yieldToEventLoop = () => (
   new Promise((resolve) => {
     setImmediate(resolve);
   })
+);
+
+const shouldRunIndexInProcess = () => (
+  process.env.VITEST === 'true' || process.env.NODE_ENV === 'test'
+);
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const getIndexWorkerPath = () => (
+  path.join(__dirname, 'logIndexWorker.js')
+);
+
+const buildWorkerExecArgv = () => (
+  process.execArgv.filter(arg => !arg.startsWith('--input-type'))
 );
 
 const loadSqlite = () => {
@@ -524,25 +569,9 @@ const flushBatch = (db, batch, insertLineStatement, insertFtsStatement, upsertGr
     return;
   }
 
-  const groupedBatch = new Map();
-  batch.forEach((record) => {
-    const existingGroup = groupedBatch.get(record.groupId);
-    if (existingGroup) {
-      existingGroup.firstLineNumber = Math.min(existingGroup.firstLineNumber, record.lineNumber);
-      existingGroup.lastLineNumber = Math.max(existingGroup.lastLineNumber, record.lineNumber);
-      existingGroup.entriesCount += 1;
-      return;
-    }
-
-    groupedBatch.set(record.groupId, {
-      groupId: record.groupId,
-      firstLineNumber: record.lineNumber,
-      lastLineNumber: record.lineNumber,
-      entriesCount: 1
-    });
-  });
-
   withTransaction(db, () => {
+    const insertedGroups = new Map();
+
     batch.forEach((record) => {
       const result = insertLineStatement.run(
         record.lineNumber,
@@ -553,8 +582,13 @@ const flushBatch = (db, batch, insertLineStatement, insertFtsStatement, upsertGr
         record.title,
         record.content,
         record.metadataJson,
-        record.metadataText
+        record.metadataText,
+        record.lineNumber
       );
+
+      if (result.changes === 0) {
+        return;
+      }
 
       if (insertFtsStatement) {
         insertFtsStatement.run(
@@ -565,9 +599,24 @@ const flushBatch = (db, batch, insertLineStatement, insertFtsStatement, upsertGr
           record.metadataText
         );
       }
+
+      const existingGroup = insertedGroups.get(record.groupId);
+      if (existingGroup) {
+        existingGroup.firstLineNumber = Math.min(existingGroup.firstLineNumber, record.lineNumber);
+        existingGroup.lastLineNumber = Math.max(existingGroup.lastLineNumber, record.lineNumber);
+        existingGroup.entriesCount += 1;
+        return;
+      }
+
+      insertedGroups.set(record.groupId, {
+        groupId: record.groupId,
+        firstLineNumber: record.lineNumber,
+        lastLineNumber: record.lineNumber,
+        entriesCount: 1
+      });
     });
 
-    groupedBatch.forEach((group) => {
+    insertedGroups.forEach((group) => {
       upsertGroupStatement.run(
         group.groupId,
         group.firstLineNumber,
@@ -584,20 +633,143 @@ const isActiveIndexJob = (job) => (
   activeIndexJob && activeIndexJob.id === job.id
 );
 
-const runIndexJob = async (job, dbPath, statsSnapshot, mode, baselineState) => {
+const emitIndexStatusIfCurrent = (job, payload) => {
+  job.lastStatus = payload;
+
+  if (!isActiveIndexJob(job)) {
+    return;
+  }
+
+  emitIndexStatus(payload);
+};
+
+const buildUnexpectedWorkerExitStatus = (job, errorMessage) => (
+  buildIndexStatus({
+    logFilePath: job.logFilePath,
+    dbPath: job.dbPath,
+    status: 'error',
+    totalBytes: job.totalBytes,
+    bytesIndexed: job.lastStatus?.bytesIndexed ?? job.initialStatus.bytesIndexed,
+    indexedLines: job.lastStatus?.indexedLines ?? job.initialStatus.indexedLines,
+    error: errorMessage
+  })
+);
+
+const attachIndexWorker = (job, task) => (
+  new Promise((resolve) => {
+    const worker = new Worker(getIndexWorkerPath(), {
+      workerData: task,
+      execArgv: buildWorkerExecArgv()
+    });
+
+    let settled = false;
+    job.worker = worker;
+
+    const finalize = (result) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      job.worker = null;
+
+      if (isActiveIndexJob(job)) {
+        activeIndexJob = null;
+      }
+
+      resolve(result);
+    };
+
+    worker.on('message', (message) => {
+      if (message?.type === 'status') {
+        emitIndexStatusIfCurrent(job, message.payload);
+        return;
+      }
+
+      if (message?.type === 'done') {
+        finalize(message.payload);
+      }
+    });
+
+    worker.on('error', (error) => {
+      log.error('Log index worker failed:', error);
+
+      const errorStatus = buildUnexpectedWorkerExitStatus(job, error.message);
+      emitIndexStatusIfCurrent(job, errorStatus);
+
+      finalize({
+        success: false,
+        message: error.message,
+        status: errorStatus
+      });
+    });
+
+    worker.on('exit', (code) => {
+      if (settled) {
+        return;
+      }
+
+      if (!job.cancelled && code !== 0) {
+        const errorMessage = `Index worker exited unexpectedly with code ${code}.`;
+        const errorStatus = buildUnexpectedWorkerExitStatus(job, errorMessage);
+        emitIndexStatusIfCurrent(job, errorStatus);
+
+        finalize({
+          success: false,
+          message: errorMessage,
+          status: errorStatus
+        });
+        return;
+      }
+
+      finalize({
+        success: job.lastStatus?.status !== 'error',
+        cancelled: job.lastStatus?.status === 'cancelled',
+        status: job.lastStatus || job.initialStatus,
+        message: job.lastStatus?.error || null
+      });
+    });
+  })
+);
+
+export const runLogIndexTask = async (
+  {
+    logFilePath,
+    dbPath,
+    statsSnapshot,
+    mode,
+    baselineState
+  },
+  {
+    onStatus = null,
+    isCancelled = () => false
+  } = {}
+) => {
+  const emitTaskStatus = (payload) => {
+    if (onStatus) {
+      onStatus(payload);
+    }
+  };
   const database = await openDatabase(dbPath);
   if (!database) {
-    emitIndexStatus(createEmptyIndexStatus({
-      logFilePath: job.logFilePath,
+    const unsupportedStatus = buildIndexStatus({
+      logFilePath,
       dbPath,
       status: 'unsupported',
       backend: 'scan',
       error: 'better-sqlite3 is not available in this runtime.'
-    }));
-    return;
+    });
+    emitTaskStatus(unsupportedStatus);
+
+    return {
+      success: false,
+      message: unsupportedStatus.error,
+      status: unsupportedStatus
+    };
   }
 
   const { db, supportsFts } = database;
+  const resolvedLogFilePath = path.resolve(logFilePath);
   const shouldOptimizeRebuild = mode === 'rebuild';
   const startByte = mode === 'append' ? baselineState.indexedBytes : 0;
   let indexedLineCount = mode === 'append' ? baselineState.indexedLineCount : 0;
@@ -615,7 +787,13 @@ const runIndexJob = async (job, dbPath, statsSnapshot, mode, baselineState) => {
       content,
       metadata_json,
       metadata_text
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    )
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM log_lines
+      WHERE line_number = ?
+    )
   `);
 
   const insertFtsStatement = supportsFts && !shouldOptimizeRebuild
@@ -648,7 +826,7 @@ const runIndexJob = async (job, dbPath, statsSnapshot, mode, baselineState) => {
       clearExistingIndexData(db);
       resetFtsTable(db, supportsFts);
       saveIndexState(db, {
-        logFilePath: path.resolve(job.logFilePath),
+        logFilePath: resolvedLogFilePath,
         fileSize: statsSnapshot.size,
         fileMtimeMs: statsSnapshot.mtimeMs,
         indexedBytes: 0,
@@ -657,7 +835,7 @@ const runIndexJob = async (job, dbPath, statsSnapshot, mode, baselineState) => {
       });
     } else {
       saveIndexState(db, {
-        logFilePath: path.resolve(job.logFilePath),
+        logFilePath: resolvedLogFilePath,
         fileSize: statsSnapshot.size,
         fileMtimeMs: statsSnapshot.mtimeMs,
         indexedBytes: baselineState.indexedBytes,
@@ -668,7 +846,7 @@ const runIndexJob = async (job, dbPath, statsSnapshot, mode, baselineState) => {
 
     if (statsSnapshot.size === 0 || startByte >= statsSnapshot.size) {
       saveIndexState(db, {
-        logFilePath: path.resolve(job.logFilePath),
+        logFilePath: resolvedLogFilePath,
         fileSize: statsSnapshot.size,
         fileMtimeMs: statsSnapshot.mtimeMs,
         indexedBytes: statsSnapshot.size,
@@ -676,19 +854,23 @@ const runIndexJob = async (job, dbPath, statsSnapshot, mode, baselineState) => {
         status: 'ready'
       });
 
-      emitIndexStatus(createEmptyIndexStatus({
-        logFilePath: job.logFilePath,
+      const readyStatus = buildIndexStatus({
+        logFilePath,
         dbPath,
         status: 'ready',
-        progressPercent: 100,
-        bytesIndexed: statsSnapshot.size,
         totalBytes: statsSnapshot.size,
+        bytesIndexed: statsSnapshot.size,
         indexedLines: indexedLineCount
-      }));
-      return;
+      });
+      emitTaskStatus(readyStatus);
+
+      return {
+        success: true,
+        status: readyStatus
+      };
     }
 
-    const stream = fs.createReadStream(job.logFilePath, {
+    const stream = fs.createReadStream(logFilePath, {
       start: startByte,
       end: statsSnapshot.size - 1,
       encoding: 'utf8',
@@ -710,7 +892,7 @@ const runIndexJob = async (job, dbPath, statsSnapshot, mode, baselineState) => {
       let shouldSkipLeadingBoundaryLine = mode === 'append' && startByte > 0;
 
       for await (const rawLine of lineReader) {
-        if (job.cancelled) {
+        if (isCancelled()) {
           lineReader.close();
           stream.destroy();
           break;
@@ -738,15 +920,12 @@ const runIndexJob = async (job, dbPath, statsSnapshot, mode, baselineState) => {
           const now = Date.now();
           if (now - lastProgressEmitAt >= INDEX_PROGRESS_INTERVAL_MS) {
             lastProgressEmitAt = now;
-            emitIndexStatus(createEmptyIndexStatus({
-              logFilePath: job.logFilePath,
+            emitTaskStatus(buildIndexStatus({
+              logFilePath,
               dbPath,
               status: 'indexing',
-              progressPercent: statsSnapshot.size === 0
-                ? 100
-                : Math.min(100, Math.round((Math.min(bytesIndexed, statsSnapshot.size) / statsSnapshot.size) * 100)),
-              bytesIndexed: Math.min(bytesIndexed, statsSnapshot.size),
               totalBytes: statsSnapshot.size,
+              bytesIndexed,
               indexedLines: indexedLineCount
             }));
           }
@@ -761,19 +940,22 @@ const runIndexJob = async (job, dbPath, statsSnapshot, mode, baselineState) => {
       stream.destroy();
     }
 
-    if (job.cancelled) {
-      emitIndexStatus(createEmptyIndexStatus({
-        logFilePath: job.logFilePath,
+    if (isCancelled()) {
+      const cancelledStatus = buildIndexStatus({
+        logFilePath,
         dbPath,
         status: 'cancelled',
-        progressPercent: statsSnapshot.size === 0
-          ? 100
-          : Math.min(100, Math.round((Math.min(bytesIndexed, statsSnapshot.size) / statsSnapshot.size) * 100)),
-        bytesIndexed: Math.min(bytesIndexed, statsSnapshot.size),
         totalBytes: statsSnapshot.size,
+        bytesIndexed,
         indexedLines: indexedLineCount
-      }));
-      return;
+      });
+      emitTaskStatus(cancelledStatus);
+
+      return {
+        success: true,
+        cancelled: true,
+        status: cancelledStatus
+      };
     }
 
     if (shouldOptimizeRebuild) {
@@ -782,7 +964,7 @@ const runIndexJob = async (job, dbPath, statsSnapshot, mode, baselineState) => {
     }
 
     saveIndexState(db, {
-      logFilePath: path.resolve(job.logFilePath),
+      logFilePath: resolvedLogFilePath,
       fileSize: statsSnapshot.size,
       fileMtimeMs: statsSnapshot.mtimeMs,
       indexedBytes: statsSnapshot.size,
@@ -790,21 +972,26 @@ const runIndexJob = async (job, dbPath, statsSnapshot, mode, baselineState) => {
       status: 'ready'
     });
 
-    emitIndexStatus(createEmptyIndexStatus({
-      logFilePath: job.logFilePath,
+    const readyStatus = buildIndexStatus({
+      logFilePath,
       dbPath,
       status: 'ready',
-      progressPercent: 100,
-      bytesIndexed: statsSnapshot.size,
       totalBytes: statsSnapshot.size,
+      bytesIndexed: statsSnapshot.size,
       indexedLines: indexedLineCount
-    }));
+    });
+    emitTaskStatus(readyStatus);
+
+    return {
+      success: true,
+      status: readyStatus
+    };
   } catch (error) {
     log.error('Error indexing log file:', error);
 
     try {
       saveIndexState(db, {
-        logFilePath: path.resolve(job.logFilePath),
+        logFilePath: resolvedLogFilePath,
         fileSize: statsSnapshot.size,
         fileMtimeMs: statsSnapshot.mtimeMs,
         indexedBytes: baselineState.indexedBytes,
@@ -815,24 +1002,24 @@ const runIndexJob = async (job, dbPath, statsSnapshot, mode, baselineState) => {
       log.error('Error writing index error state:', stateError);
     }
 
-    emitIndexStatus(createEmptyIndexStatus({
-      logFilePath: job.logFilePath,
+    const errorStatus = buildIndexStatus({
+      logFilePath,
       dbPath,
       status: 'error',
-      progressPercent: statsSnapshot.size === 0
-        ? 100
-        : Math.min(100, Math.round((Math.min(bytesIndexed, statsSnapshot.size) / statsSnapshot.size) * 100)),
-      bytesIndexed: Math.min(bytesIndexed, statsSnapshot.size),
       totalBytes: statsSnapshot.size,
+      bytesIndexed,
       indexedLines: indexedLineCount,
       error: error.message
-    }));
+    });
+    emitTaskStatus(errorStatus);
+
+    return {
+      success: false,
+      message: error.message,
+      status: errorStatus
+    };
   } finally {
     db.close();
-
-    if (isActiveIndexJob(job)) {
-      activeIndexJob = null;
-    }
   }
 };
 
@@ -857,6 +1044,12 @@ export const cancelLogIndexing = () => {
   }
 
   activeIndexJob.cancelled = true;
+
+  if (activeIndexJob.worker) {
+    activeIndexJob.worker.postMessage({
+      type: 'cancel'
+    });
+  }
 
   return {
     success: true,
@@ -892,16 +1085,20 @@ export const startLogIndexing = async (
   const stats = await fs.promises.stat(logFilePath);
   const dbPath = await getIndexDatabasePath(logFilePath);
 
-  if (activeIndexJob && activeIndexJob.logFilePath === logFilePath && !activeIndexJob.cancelled) {
-    if (waitForCompletion && activeIndexJob.promise) {
+  if (activeIndexJob && activeIndexJob.logFilePath === logFilePath) {
+    if (activeIndexJob.cancelled && activeIndexJob.promise) {
       await activeIndexJob.promise;
-    }
+    } else {
+      if (waitForCompletion && activeIndexJob.promise) {
+        await activeIndexJob.promise;
+      }
 
-    return {
-      success: true,
-      promise: activeIndexJob.promise || null,
-      status: currentIndexStatus
-    };
+      return {
+        success: true,
+        promise: activeIndexJob.promise || null,
+        status: currentIndexStatus
+      };
+    }
   }
 
   const database = await openDatabase(dbPath);
@@ -967,24 +1164,51 @@ export const startLogIndexing = async (
     id: Date.now(),
     logFilePath,
     cancelled: false,
-    promise: null
+    promise: null,
+    worker: null,
+    dbPath,
+    totalBytes: stats.size,
+    initialStatus: null,
+    lastStatus: null
   };
   activeIndexJob = job;
 
-  const indexingStatus = createEmptyIndexStatus({
+  const indexingStatus = buildIndexStatus({
     logFilePath,
     dbPath,
     status: 'indexing',
-    progressPercent: stats.size === 0
-      ? 100
-      : Math.min(100, Math.round((baselineState.indexedBytes / stats.size) * 100)),
-    bytesIndexed: baselineState.indexedBytes,
     totalBytes: stats.size,
+    bytesIndexed: baselineState.indexedBytes,
     indexedLines: baselineState.indexedLineCount
   });
+  job.initialStatus = indexingStatus;
+  job.lastStatus = indexingStatus;
   emitIndexStatus(indexingStatus);
 
-  job.promise = runIndexJob(job, dbPath, stats, indexMode, baselineState);
+  const task = {
+    logFilePath,
+    dbPath,
+    statsSnapshot: {
+      size: stats.size,
+      mtimeMs: stats.mtimeMs
+    },
+    mode: indexMode,
+    baselineState
+  };
+
+  job.promise = shouldRunIndexInProcess()
+    ? runLogIndexTask(task, {
+      onStatus: (payload) => {
+        emitIndexStatusIfCurrent(job, payload);
+      },
+      isCancelled: () => job.cancelled
+    }).finally(() => {
+      if (isActiveIndexJob(job)) {
+        activeIndexJob = null;
+      }
+    })
+    : attachIndexWorker(job, task);
+
   if (waitForCompletion) {
     await job.promise;
   } else {

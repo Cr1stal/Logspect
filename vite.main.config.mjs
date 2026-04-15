@@ -8,7 +8,10 @@ const __dirname = path.dirname(__filename);
 const workerElectronLogShimPath = path.resolve(__dirname, 'src/modules/workerElectronLogShim.js');
 
 export default defineConfig((configEnv) => {
-  const isSearchWorkerBuild = configEnv?.forgeConfigSelf?.entry === 'src/modules/logSearchWorker.js';
+  const isWorkerBuild = [
+    'src/modules/logSearchWorker.js',
+    'src/modules/logIndexWorker.js'
+  ].includes(configEnv?.forgeConfigSelf?.entry);
 
   return {
     build: {
@@ -19,7 +22,7 @@ export default defineConfig((configEnv) => {
       sourcemap: true,
     },
     resolve: {
-      alias: isSearchWorkerBuild
+      alias: isWorkerBuild
         ? {
             'electron-log': workerElectronLogShimPath
           }

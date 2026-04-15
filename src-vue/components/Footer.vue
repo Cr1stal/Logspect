@@ -22,6 +22,10 @@ export default {
       type: Number,
       default: 0
     },
+    hasProject: {
+      type: Boolean,
+      default: false
+    },
     totalEntries: {
       type: Number,
       default: 0
