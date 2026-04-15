@@ -171,6 +171,11 @@
 
 <script>
 import { ClipboardList, Copy } from 'lucide-vue-next'
+import {
+  entryKindLabelForContent,
+  entryToneForContent,
+  isPayloadLikeContent
+} from './entryDetailsPresentation.js'
 
 const STACK_TRACE_COLLAPSE_MIN_LINES = 4
 const PAYLOAD_COLLAPSE_MIN_LENGTH = 220
@@ -410,17 +415,7 @@ export default {
       ]
     },
     isPayloadLikeEntry(entry) {
-      const content = entry.content.trim()
-
-      return Boolean(
-        content.match(/^Parameters:/i) ||
-        content.match(/^params[=:]/i) ||
-        content.startsWith('{') ||
-        content.startsWith('[') ||
-        content.includes('=>') ||
-        content.includes('":{"') ||
-        content.match(/^\w+:\s*[{[]/)
-      )
+      return isPayloadLikeContent(entry.content)
     },
     isPayloadCollapsed(entry, index) {
       return (
@@ -473,53 +468,10 @@ export default {
       return item.entries.map(candidate => candidate.entry.content).join('\n')
     },
     entryTone(entry) {
-      const content = entry.content.toLowerCase();
-
-      if (content.includes('fatal') || content.includes('error')) {
-        return 'error';
-      }
-
-      if (content.includes('warn')) {
-        return 'warn';
-      }
-
-      if (content.startsWith('started ') || content.includes('info: start')) {
-        return 'start';
-      }
-
-      if (content.startsWith('completed ') || content.includes('info: done')) {
-        return 'complete';
-      }
-
-      if (/\b(select|insert|update|delete)\b/i.test(entry.content)) {
-        return 'sql';
-      }
-
-      if (content.includes('debug')) {
-        return 'debug';
-      }
-
-      return 'default';
+      return entryToneForContent(entry.content)
     },
     entryKindLabel(entry) {
-      const tone = this.entryTone(entry);
-
-      switch (tone) {
-        case 'error':
-          return 'Issue';
-        case 'warn':
-          return 'Warning';
-        case 'start':
-          return 'Start';
-        case 'complete':
-          return 'Completion';
-        case 'sql':
-          return 'SQL';
-        case 'debug':
-          return 'Debug';
-        default:
-          return 'Log line';
-      }
+      return entryKindLabelForContent(entry.content)
     },
     copyLabel(entry, index) {
       return this.copiedEntryKey === this.entryKey(entry, index) ? 'Copied' : 'Copy';
