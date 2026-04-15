@@ -39,6 +39,7 @@ export default defineConfig({
     strictPort: true,
   },
   build: {
+    outDir: '../.vite/renderer/main_window',
     rollupOptions: {
       external: ['electron'],
     },
