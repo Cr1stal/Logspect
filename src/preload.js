@@ -15,7 +15,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   selectDirectory: () => ipcRenderer.invoke('select-directory'),
   selectRecentProject: (projectPath) => ipcRenderer.invoke('select-recent-project', projectPath),
+  selectProjectLogFile: (logFilePath) => ipcRenderer.invoke('select-project-log-file', logFilePath),
+  browseProjectLogFile: () => ipcRenderer.invoke('browse-project-log-file'),
   getProjectInfo: () => ipcRenderer.invoke('get-project-info'),
+  getProjectLogFiles: () => ipcRenderer.invoke('get-project-log-files'),
   onProjectSelected: (callback) => {
     ipcRenderer.on('project-selected', (event, data) => callback(data));
   },

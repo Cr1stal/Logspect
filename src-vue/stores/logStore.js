@@ -5,6 +5,8 @@ export const useLogStore = defineStore('log', {
     // Project state
     hasProject: false,
     projectDirectory: '',
+    selectedLogFilePath: '',
+    availableLogFiles: [],
     isWatching: false,
 
     // Log data state
@@ -94,6 +96,25 @@ export const useLogStore = defineStore('log', {
   },
 
   actions: {
+    resetViewerState() {
+      this.logData = {
+        totalEntries: 0,
+        entries: []
+      };
+      this.selectedUuid = null;
+      this.searchTerm = '';
+      this.filteredEntries = [];
+    },
+
+    applyProjectSelection(result) {
+      this.hasProject = true;
+      this.projectDirectory = result.projectDir || '';
+      this.selectedLogFilePath = result.logFilePath || '';
+      this.availableLogFiles = result.availableLogFiles || [];
+      this.isWatching = result.isWatching ?? true;
+      this.resetViewerState();
+    },
+
     // Project actions
     async loadProjectInfo() {
       if (!window.electronAPI) {
@@ -105,6 +126,8 @@ export const useLogStore = defineStore('log', {
         const projectInfo = await window.electronAPI.getProjectInfo();
         this.hasProject = projectInfo.hasProject;
         this.projectDirectory = projectInfo.projectDirectory || '';
+        this.selectedLogFilePath = projectInfo.logFilePath || '';
+        this.availableLogFiles = projectInfo.availableLogFiles || [];
         this.isWatching = projectInfo.isWatching;
 
         if (this.hasProject) {
@@ -119,9 +142,7 @@ export const useLogStore = defineStore('log', {
       try {
         const result = await window.electronAPI.selectDirectory();
         if (result.success) {
-          this.hasProject = true;
-          this.projectDirectory = result.projectDir;
-          this.isWatching = true;
+          this.applyProjectSelection(result);
           await this.refreshLogs();
           return result.projectDir; // Return the selected path
         } else {
@@ -138,9 +159,7 @@ export const useLogStore = defineStore('log', {
       try {
         const result = await window.electronAPI.selectRecentProject(projectPath);
         if (result.success) {
-          this.hasProject = true;
-          this.projectDirectory = result.projectDir;
-          this.isWatching = true;
+          this.applyProjectSelection(result);
           await this.refreshLogs();
           return true;
         } else {
@@ -149,6 +168,65 @@ export const useLogStore = defineStore('log', {
         }
       } catch (error) {
         console.error('Error selecting recent project:', error);
+        return false;
+      }
+    },
+
+    async refreshAvailableLogFiles() {
+      if (!window.electronAPI || !this.hasProject) {
+        return;
+      }
+
+      try {
+        const result = await window.electronAPI.getProjectLogFiles();
+        if (result.success) {
+          this.availableLogFiles = result.availableLogFiles || [];
+          this.selectedLogFilePath = result.logFilePath || this.selectedLogFilePath;
+        } else {
+          console.error('Failed to refresh project log files:', result.message);
+        }
+      } catch (error) {
+        console.error('Error refreshing project log files:', error);
+      }
+    },
+
+    async selectProjectLogFile(logFilePath) {
+      if (!logFilePath || logFilePath === this.selectedLogFilePath) {
+        return true;
+      }
+
+      try {
+        const result = await window.electronAPI.selectProjectLogFile(logFilePath);
+        if (result.success) {
+          this.applyProjectSelection(result);
+          await this.refreshLogs();
+          return true;
+        } else {
+          console.error('Failed to select project log file:', result.message);
+          return false;
+        }
+      } catch (error) {
+        console.error('Error selecting project log file:', error);
+        return false;
+      }
+    },
+
+    async browseProjectLogFile() {
+      try {
+        const result = await window.electronAPI.browseProjectLogFile();
+        if (result.success) {
+          this.applyProjectSelection(result);
+          await this.refreshLogs();
+          return true;
+        }
+
+        if (!result.canceled) {
+          console.error('Failed to browse project log file:', result.message);
+        }
+
+        return false;
+      } catch (error) {
+        console.error('Error browsing project log file:', error);
         return false;
       }
     },
