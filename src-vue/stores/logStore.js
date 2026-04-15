@@ -1,5 +1,38 @@
 import { defineStore } from 'pinia'
 
+const SEARCH_DEBOUNCE_MS = 250
+
+const createEmptySearchState = () => ({
+  searchId: null,
+  query: '',
+  backend: null,
+  status: 'idle',
+  progressPercent: 0,
+  bytesProcessed: 0,
+  totalBytes: 0,
+  matchedLines: 0,
+  shownGroups: 0,
+  scannedLines: 0,
+  truncated: false,
+  error: null,
+  results: {
+    totalEntries: 0,
+    entries: []
+  }
+})
+
+const createEmptyIndexState = () => ({
+  logFilePath: '',
+  dbPath: '',
+  status: 'idle',
+  progressPercent: 0,
+  bytesIndexed: 0,
+  totalBytes: 0,
+  indexedLines: 0,
+  backend: 'sqlite',
+  error: null
+})
+
 export const useLogStore = defineStore('log', {
   state: () => ({
     // Project state
@@ -22,29 +55,55 @@ export const useLogStore = defineStore('log', {
 
     // Search state
     searchTerm: '',
-    filteredEntries: []
+    searchDebounceTimer: null,
+    diskSearch: createEmptySearchState(),
+    logIndex: createEmptyIndexState()
   }),
 
   getters: {
     projectName: (state) => {
-      if (!state.projectDirectory) return '';
-      return state.projectDirectory.split('/').pop() || 'Unknown Project';
+      if (!state.projectDirectory) return ''
+      return state.projectDirectory.split('/').pop() || 'Unknown Project'
     },
 
     totalLogEntries: (state) => {
-      return state.logData.entries.reduce((sum, entry) => sum + entry.entriesCount, 0);
+      return state.logData.entries.reduce((sum, entry) => sum + entry.entriesCount, 0)
     },
 
-    selectedEntry: (state) => {
-      if (!state.selectedUuid) return null;
-      const entry = state.logData.entries.find(entry => entry.uuid === state.selectedUuid);
-      if (!entry) return null;
+    isDiskSearchVisible(state) {
+      return Boolean(state.searchTerm.trim()) || state.diskSearch.status !== 'idle'
+    },
 
-      // Return a copy of the entry with entries sorted in ascending order (oldest first)
+    isDiskSearchRunning: (state) => {
+      return state.diskSearch.status === 'pending' || state.diskSearch.status === 'running'
+    },
+
+    isLogIndexRunning: (state) => {
+      return state.logIndex.status === 'indexing'
+    },
+
+    displayedLogData(state) {
+      return this.isDiskSearchVisible ? state.diskSearch.results : state.logData
+    },
+
+    displayedTotalLogEntries() {
+      return this.displayedLogData.entries.reduce((sum, entry) => sum + entry.entriesCount, 0)
+    },
+
+    selectedEntry(state) {
+      if (!state.selectedUuid) return null
+
+      const entry = this.displayedLogData.entries.find(candidate => candidate.uuid === state.selectedUuid)
+      if (!entry) return null
+
+      const sortedEntries = entry.searchMeta?.isDiskSearchResult
+        ? [...entry.entries].sort((left, right) => (left.lineNumber || 0) - (right.lineNumber || 0))
+        : [...entry.entries].sort((left, right) => new Date(left.timestamp) - new Date(right.timestamp))
+
       return {
         ...entry,
-        entries: [...entry.entries].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
-      };
+        entries: sortedEntries
+      }
     },
 
     // Statistics by type
@@ -54,36 +113,36 @@ export const useLogStore = defineStore('log', {
         app: 0,
         worker: 0,
         unknown: 0
-      };
+      }
 
       state.logData.entries.forEach(entry => {
         if (breakdown.hasOwnProperty(entry.type)) {
-          breakdown[entry.type]++;
+          breakdown[entry.type] += 1
         } else {
-          breakdown.unknown++;
+          breakdown.unknown += 1
         }
-      });
+      })
 
-      return breakdown;
+      return breakdown
     },
 
     // Success rate statistics
     successStats: (state) => {
-      let total = 0;
-      let successful = 0;
-      let failed = 0;
-      let pending = 0;
+      let total = 0
+      let successful = 0
+      let failed = 0
+      let pending = 0
 
       state.logData.entries.forEach(entry => {
-        total++;
+        total += 1
         if (entry.success === true) {
-          successful++;
+          successful += 1
         } else if (entry.success === false) {
-          failed++;
+          failed += 1
         } else {
-          pending++;
+          pending += 1
         }
-      });
+      })
 
       return {
         total,
@@ -91,250 +150,441 @@ export const useLogStore = defineStore('log', {
         failed,
         pending,
         successRate: total > 0 ? (successful / total) * 100 : 0
-      };
+      }
     }
   },
 
   actions: {
+    clearPendingSearchTimer() {
+      if (this.searchDebounceTimer) {
+        clearTimeout(this.searchDebounceTimer)
+        this.searchDebounceTimer = null
+      }
+    },
+
+    resetDiskSearchState({ preserveSearchTerm = true } = {}) {
+      const nextSearchTerm = preserveSearchTerm ? this.searchTerm : ''
+
+      this.clearPendingSearchTimer()
+      this.diskSearch = createEmptySearchState()
+      this.diskSearch.query = nextSearchTerm.trim()
+
+      if (!preserveSearchTerm) {
+        this.searchTerm = ''
+      }
+    },
+
     resetViewerState() {
       this.logData = {
         totalEntries: 0,
         entries: []
-      };
-      this.selectedUuid = null;
-      this.searchTerm = '';
-      this.filteredEntries = [];
+      }
+      this.selectedUuid = null
+      this.resetDiskSearchState({ preserveSearchTerm: false })
+      this.logIndex = createEmptyIndexState()
     },
 
     applyProjectSelection(result) {
-      this.hasProject = true;
-      this.projectDirectory = result.projectDir || '';
-      this.selectedLogFilePath = result.logFilePath || '';
-      this.availableLogFiles = result.availableLogFiles || [];
-      this.isWatching = result.isWatching ?? true;
-      this.resetViewerState();
+      this.hasProject = true
+      this.projectDirectory = result.projectDir || ''
+      this.selectedLogFilePath = result.logFilePath || ''
+      this.availableLogFiles = result.availableLogFiles || []
+      this.isWatching = result.isWatching ?? true
+      this.resetViewerState()
+      void this.refreshLogIndexStatus()
     },
 
     // Project actions
     async loadProjectInfo() {
       if (!window.electronAPI) {
-        console.warn('Not running in Electron environment');
-        return;
+        console.warn('Not running in Electron environment')
+        return
       }
 
       try {
-        const projectInfo = await window.electronAPI.getProjectInfo();
-        this.hasProject = projectInfo.hasProject;
-        this.projectDirectory = projectInfo.projectDirectory || '';
-        this.selectedLogFilePath = projectInfo.logFilePath || '';
-        this.availableLogFiles = projectInfo.availableLogFiles || [];
-        this.isWatching = projectInfo.isWatching;
+        const projectInfo = await window.electronAPI.getProjectInfo()
+        this.hasProject = projectInfo.hasProject
+        this.projectDirectory = projectInfo.projectDirectory || ''
+        this.selectedLogFilePath = projectInfo.logFilePath || ''
+        this.availableLogFiles = projectInfo.availableLogFiles || []
+        this.isWatching = projectInfo.isWatching
 
         if (this.hasProject) {
-          await this.refreshLogs();
+          await this.refreshLogs()
+          await this.refreshLogIndexStatus()
         }
       } catch (error) {
-        console.error('Error loading project info:', error);
+        console.error('Error loading project info:', error)
       }
     },
 
     async selectProject() {
       try {
-        const result = await window.electronAPI.selectDirectory();
+        const result = await window.electronAPI.selectDirectory()
         if (result.success) {
-          this.applyProjectSelection(result);
-          await this.refreshLogs();
-          return result.projectDir; // Return the selected path
-        } else {
-          console.error('Failed to select project:', result.message);
-          return null;
+          this.applyProjectSelection(result)
+          await this.refreshLogs()
+          return result.projectDir
         }
+
+        console.error('Failed to select project:', result.message)
+        return null
       } catch (error) {
-        console.error('Error selecting project:', error);
-        return null;
+        console.error('Error selecting project:', error)
+        return null
       }
     },
 
     async selectRecentProject(projectPath) {
       try {
-        const result = await window.electronAPI.selectRecentProject(projectPath);
+        const result = await window.electronAPI.selectRecentProject(projectPath)
         if (result.success) {
-          this.applyProjectSelection(result);
-          await this.refreshLogs();
-          return true;
-        } else {
-          console.error('Failed to select recent project:', result.message);
-          return false;
+          this.applyProjectSelection(result)
+          await this.refreshLogs()
+          return true
         }
+
+        console.error('Failed to select recent project:', result.message)
+        return false
       } catch (error) {
-        console.error('Error selecting recent project:', error);
-        return false;
+        console.error('Error selecting recent project:', error)
+        return false
       }
     },
 
     async refreshAvailableLogFiles() {
       if (!window.electronAPI || !this.hasProject) {
-        return;
+        return
       }
 
       try {
-        const result = await window.electronAPI.getProjectLogFiles();
+        const result = await window.electronAPI.getProjectLogFiles()
         if (result.success) {
-          this.availableLogFiles = result.availableLogFiles || [];
-          this.selectedLogFilePath = result.logFilePath || this.selectedLogFilePath;
+          this.availableLogFiles = result.availableLogFiles || []
+          this.selectedLogFilePath = result.logFilePath || this.selectedLogFilePath
         } else {
-          console.error('Failed to refresh project log files:', result.message);
+          console.error('Failed to refresh project log files:', result.message)
         }
       } catch (error) {
-        console.error('Error refreshing project log files:', error);
+        console.error('Error refreshing project log files:', error)
       }
     },
 
     async selectProjectLogFile(logFilePath) {
       if (!logFilePath || logFilePath === this.selectedLogFilePath) {
-        return true;
+        return true
       }
 
       try {
-        const result = await window.electronAPI.selectProjectLogFile(logFilePath);
+        const result = await window.electronAPI.selectProjectLogFile(logFilePath)
         if (result.success) {
-          this.applyProjectSelection(result);
-          await this.refreshLogs();
-          return true;
-        } else {
-          console.error('Failed to select project log file:', result.message);
-          return false;
+          this.applyProjectSelection(result)
+          await this.refreshLogs()
+          return true
         }
+
+        console.error('Failed to select project log file:', result.message)
+        return false
       } catch (error) {
-        console.error('Error selecting project log file:', error);
-        return false;
+        console.error('Error selecting project log file:', error)
+        return false
       }
     },
 
     async browseProjectLogFile() {
       try {
-        const result = await window.electronAPI.browseProjectLogFile();
+        const result = await window.electronAPI.browseProjectLogFile()
         if (result.success) {
-          this.applyProjectSelection(result);
-          await this.refreshLogs();
-          return true;
+          this.applyProjectSelection(result)
+          await this.refreshLogs()
+          return true
         }
 
         if (!result.canceled) {
-          console.error('Failed to browse project log file:', result.message);
+          console.error('Failed to browse project log file:', result.message)
         }
 
-        return false;
+        return false
       } catch (error) {
-        console.error('Error browsing project log file:', error);
-        return false;
+        console.error('Error browsing project log file:', error)
+        return false
       }
     },
 
     // Log data actions
     updateLogData(data) {
-      this.logData = data;
-
-      // Update filtered entries if there's a search term
-      if (this.searchTerm.trim()) {
-        this.updateFilteredEntries();
-      }
+      this.logData = data
     },
 
     async refreshLogs() {
-      this.isRefreshing = true;
+      this.isRefreshing = true
       try {
-        const data = await window.electronAPI.getLogData();
-        this.updateLogData(data);
+        const data = await window.electronAPI.getLogData()
+        this.updateLogData(data)
       } catch (error) {
-        console.error('Error refreshing logs:', error);
+        console.error('Error refreshing logs:', error)
       } finally {
         setTimeout(() => {
-          this.isRefreshing = false;
-        }, 1000);
+          this.isRefreshing = false
+        }, 1000)
+      }
+    },
+
+    async refreshLogIndexStatus() {
+      if (!window.electronAPI || !this.selectedLogFilePath) {
+        this.logIndex = createEmptyIndexState()
+        return
+      }
+
+      try {
+        const status = await window.electronAPI.getLogIndexStatus()
+        this.handleIncomingIndexStatus(status)
+      } catch (error) {
+        console.error('Error refreshing log index status:', error)
       }
     },
 
     async clearLogs() {
       if (confirm('Clear all log entries? This will remove all captured log data.')) {
         try {
-          const result = await window.electronAPI.clearLogs();
+          const result = await window.electronAPI.clearLogs()
 
           if (result.success) {
-            console.log('Logs cleared successfully from main process');
-            this.selectedUuid = null;
-            this.searchTerm = '';
-            this.filteredEntries = [];
+            console.log('Logs cleared successfully from main process')
+            this.selectedUuid = null
           } else {
-            console.error('Failed to clear logs:', result.message);
-            alert('Failed to clear logs: ' + result.message);
+            console.error('Failed to clear logs:', result.message)
+            alert('Failed to clear logs: ' + result.message)
           }
         } catch (error) {
-          console.error('Error clearing logs:', error);
-          alert('Error clearing logs: ' + error.message);
+          console.error('Error clearing logs:', error)
+          alert('Error clearing logs: ' + error.message)
         }
       }
     },
 
     // UI actions
     selectEntry(uuid) {
-      this.selectedUuid = uuid;
+      this.selectedUuid = uuid
     },
 
     toggleAutoScroll() {
-      this.autoScroll = !this.autoScroll;
+      this.autoScroll = !this.autoScroll
     },
 
     async toggleWatching() {
       try {
         if (this.isWatching) {
-          // Stop watching
-          await window.electronAPI.stopWatching();
-          this.isWatching = false;
+          await window.electronAPI.stopWatching()
+          this.isWatching = false
         } else {
-          // Start watching
-          await window.electronAPI.startWatching();
-          this.isWatching = true;
+          await window.electronAPI.startWatching()
+          this.isWatching = true
         }
       } catch (error) {
-        console.error('Error toggling watching:', error);
+        console.error('Error toggling watching:', error)
       }
     },
 
-    // Search actions
-    setSearchTerm(term) {
-      this.searchTerm = term;
-      this.updateFilteredEntries();
-    },
-
-    updateFilteredEntries() {
-      if (!this.searchTerm.trim()) {
-        // If no search term, return all entries sorted by last seen
-        this.filteredEntries = [...this.logData.entries].sort((a, b) =>
-          new Date(b.lastSeen) - new Date(a.lastSeen)
-        );
-        return;
+    handleIncomingSearchStatus(payload) {
+      const activeQuery = this.diskSearch.query || this.searchTerm.trim()
+      if (!activeQuery || payload.query !== activeQuery) {
+        return
       }
 
-      // Simple search fallback
-      const searchLower = this.searchTerm.toLowerCase();
-      this.filteredEntries = this.logData.entries.filter(entry => {
-        return entry.uuid.toLowerCase().includes(searchLower) ||
-               entry.type.toLowerCase().includes(searchLower) ||
-               entry.subType.toLowerCase().includes(searchLower) ||
-               entry.title.toLowerCase().includes(searchLower) ||
-               (entry.metadata && Object.values(entry.metadata).some(value =>
-                 String(value).toLowerCase().includes(searchLower)
-               ));
-      }).sort((a, b) => new Date(b.lastSeen) - new Date(a.lastSeen));
+      if (this.diskSearch.searchId && payload.searchId !== this.diskSearch.searchId && payload.status !== 'running') {
+        return
+      }
+
+      this.diskSearch = {
+        ...this.diskSearch,
+        searchId: payload.searchId,
+        query: payload.query,
+        backend: payload.backend || this.diskSearch.backend,
+        status: payload.status,
+        progressPercent: payload.progressPercent ?? this.diskSearch.progressPercent,
+        bytesProcessed: payload.bytesProcessed ?? this.diskSearch.bytesProcessed,
+        totalBytes: payload.totalBytes ?? this.diskSearch.totalBytes,
+        matchedLines: payload.matchedLines ?? this.diskSearch.matchedLines,
+        shownGroups: payload.shownGroups ?? this.diskSearch.shownGroups,
+        scannedLines: payload.scannedLines ?? this.diskSearch.scannedLines,
+        truncated: payload.truncated ?? this.diskSearch.truncated,
+        error: payload.error || null
+      }
+    },
+
+    handleIncomingSearchResults(payload) {
+      const activeQuery = this.diskSearch.query || this.searchTerm.trim()
+      if (!activeQuery || payload.query !== activeQuery) {
+        return
+      }
+
+      if (this.diskSearch.searchId && payload.searchId !== this.diskSearch.searchId) {
+        return
+      }
+
+      this.diskSearch = {
+        ...this.diskSearch,
+        searchId: payload.searchId,
+        query: payload.query,
+        backend: payload.backend || this.diskSearch.backend,
+        results: {
+          totalEntries: payload.totalEntries || 0,
+          entries: payload.entries || []
+        },
+        matchedLines: payload.summary?.matchedLines ?? this.diskSearch.matchedLines,
+        shownGroups: payload.summary?.shownGroups ?? this.diskSearch.shownGroups,
+        scannedLines: payload.summary?.scannedLines ?? this.diskSearch.scannedLines,
+        truncated: payload.summary?.truncated ?? this.diskSearch.truncated
+      }
+
+      if (this.selectedUuid && !this.diskSearch.results.entries.some(entry => entry.uuid === this.selectedUuid)) {
+        this.selectedUuid = null
+      }
+    },
+
+    async startDiskSearch(query) {
+      if (!window.electronAPI || !this.hasProject) {
+        return
+      }
+
+      const trimmedQuery = query.trim()
+      if (!trimmedQuery || trimmedQuery !== this.searchTerm.trim()) {
+        return
+      }
+
+      try {
+        this.diskSearch = {
+          ...createEmptySearchState(),
+          query: trimmedQuery,
+          backend: null,
+          status: 'running'
+        }
+
+        const result = await window.electronAPI.startLogSearch(trimmedQuery)
+        if (trimmedQuery !== this.searchTerm.trim()) {
+          return
+        }
+
+        if (result.success) {
+          this.diskSearch = {
+            ...this.diskSearch,
+            searchId: result.searchId,
+            query: result.query,
+            backend: result.backend || this.diskSearch.backend,
+            status: 'running',
+            totalBytes: result.totalBytes || 0,
+            error: null
+          }
+        } else {
+          this.diskSearch = {
+            ...this.diskSearch,
+            status: 'error',
+            error: result.message || 'Failed to search the log file.'
+          }
+        }
+      } catch (error) {
+        console.error('Error starting disk search:', error)
+        if (trimmedQuery === this.searchTerm.trim()) {
+          this.diskSearch = {
+            ...this.diskSearch,
+            status: 'error',
+            error: error.message
+          }
+        }
+      }
+    },
+
+    updateSearchTerm(term) {
+      this.searchTerm = term
+      this.clearPendingSearchTimer()
+
+      const trimmedTerm = term.trim()
+      if (!trimmedTerm) {
+        void this.clearSearch()
+        return
+      }
+
+      this.selectedUuid = null
+      this.diskSearch = {
+        ...createEmptySearchState(),
+        query: trimmedTerm,
+        status: 'pending'
+      }
+
+      this.searchDebounceTimer = setTimeout(() => {
+        void this.startDiskSearch(trimmedTerm)
+      }, SEARCH_DEBOUNCE_MS)
+    },
+
+    async stopSearch() {
+      this.clearPendingSearchTimer()
+
+      try {
+        if (window.electronAPI) {
+          await window.electronAPI.cancelLogSearch()
+        }
+      } catch (error) {
+        console.error('Error stopping disk search:', error)
+      } finally {
+        if (this.isDiskSearchRunning) {
+          this.diskSearch = {
+            ...this.diskSearch,
+            status: 'cancelled'
+          }
+        }
+      }
+    },
+
+    async clearSearch() {
+      this.clearPendingSearchTimer()
+
+      try {
+        if (window.electronAPI) {
+          await window.electronAPI.cancelLogSearch()
+        }
+      } catch (error) {
+        console.error('Error clearing disk search:', error)
+      } finally {
+        this.selectedUuid = null
+        this.searchTerm = ''
+        this.resetDiskSearchState({ preserveSearchTerm: false })
+      }
+    },
+
+    handleIncomingIndexStatus(payload) {
+      if (!payload) {
+        return
+      }
+
+      if (payload.logFilePath && this.selectedLogFilePath && payload.logFilePath !== this.selectedLogFilePath) {
+        return
+      }
+
+      this.logIndex = {
+        ...createEmptyIndexState(),
+        ...payload
+      }
     },
 
     // Setup electron listeners
     setupLogListener() {
       if (window.electronAPI) {
         window.electronAPI.onLogDataUpdate((data) => {
-          this.updateLogData(data);
-        });
+          this.updateLogData(data)
+        })
+
+        window.electronAPI.onLogSearchStatus((payload) => {
+          this.handleIncomingSearchStatus(payload)
+        })
+
+        window.electronAPI.onLogSearchResults((payload) => {
+          this.handleIncomingSearchResults(payload)
+        })
+
+        window.electronAPI.onLogIndexStatus((payload) => {
+          this.handleIncomingIndexStatus(payload)
+        })
       }
     }
   }

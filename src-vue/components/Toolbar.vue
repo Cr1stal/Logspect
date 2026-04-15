@@ -59,7 +59,7 @@
             ref="searchInput"
             type="text"
             class="search-input"
-            placeholder="Filter"
+            placeholder="Search whole file"
             :value="searchTerm"
             @input="$emit('update-search', $event.target.value)"
           >

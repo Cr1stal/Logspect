@@ -1,16 +1,65 @@
 import fs from 'fs';
 import log from "electron-log";
 import { parseLogLines } from './logParser.js';
-import { addLogEntry, displayLogsByUuid } from './logStorage.js';
+import { addLogEntry } from './logStorage.js';
+
+export const INITIAL_HISTORY_MAX_BYTES = 10 * 1024 * 1024;
+const READ_STREAM_HIGH_WATER_MARK = 256 * 1024;
 
 // File watching state
 let lastSize = 0;
 let logFilePath = null;
 let isWatching = false;
-let watcher = null;
+let isReading = false;
+let hasPendingRead = false;
+let dropPartialLeadingLine = false;
 
 // Callback for when new log data is available
 let onLogDataCallback = null;
+
+const getInitialReadOffset = (fileSize) => (
+  Math.max(0, fileSize - INITIAL_HISTORY_MAX_BYTES)
+);
+
+const trimPartialLeadingLine = (content) => {
+  if (!content) {
+    return '';
+  }
+
+  const firstLineBreakIndex = content.indexOf('\n');
+  if (firstLineBreakIndex === -1) {
+    return '';
+  }
+
+  return content.slice(firstLineBreakIndex + 1);
+};
+
+const readFileSlice = (filePath, start, end, shouldDropPartialLeadingLine = false) => (
+  new Promise((resolve, reject) => {
+    const stream = fs.createReadStream(filePath, {
+      start,
+      end,
+      encoding: 'utf8',
+      highWaterMark: READ_STREAM_HIGH_WATER_MARK
+    });
+
+    let content = '';
+
+    stream.on('data', (chunk) => {
+      content += chunk;
+    });
+
+    stream.on('end', () => {
+      resolve(
+        shouldDropPartialLeadingLine
+          ? trimPartialLeadingLine(content)
+          : content
+      );
+    });
+
+    stream.on('error', reject);
+  })
+);
 
 /**
  * Sets the callback function to be called when new log data is processed
@@ -27,7 +76,6 @@ export const stopWatching = () => {
   if (isWatching && logFilePath) {
     fs.unwatchFile(logFilePath);
     isWatching = false;
-    watcher = null;
     log.info('Stopped watching previous log file');
   }
 };
@@ -43,15 +91,25 @@ export const startWatching = async (newLogPath) => {
 
     logFilePath = newLogPath;
     lastSize = 0;
+    dropPartialLeadingLine = false;
+
+    let shouldLoadExistingContent = false;
 
     // Check if file exists and get initial size
     try {
       const stats = await fs.promises.stat(logFilePath);
-      lastSize = stats.size;
-      console.log(`Started watching log file: ${logFilePath}`);
-      console.log(`Initial file size: ${lastSize} bytes`);
+      lastSize = getInitialReadOffset(stats.size);
+      dropPartialLeadingLine = lastSize > 0;
+      shouldLoadExistingContent = stats.size > lastSize;
+
+      log.info(`Started watching log file: ${logFilePath}`);
+      log.info(`Initial file size: ${stats.size} bytes`);
+
+      if (dropPartialLeadingLine) {
+        log.info(`Loading the most recent ${INITIAL_HISTORY_MAX_BYTES} bytes to keep large files responsive`);
+      }
     } catch (err) {
-      console.log('Log file not found, will wait for it to be created:', logFilePath);
+      log.info('Log file not found, will wait for it to be created:', logFilePath);
       lastSize = 0;
     }
 
@@ -62,11 +120,15 @@ export const startWatching = async (newLogPath) => {
     }, (curr, prev) => {
       if (curr.mtime > prev.mtime) {
         log.info('File change detected...');
-        readLogFile();
+        void readLogFile();
       }
     });
 
     isWatching = true;
+
+    if (shouldLoadExistingContent) {
+      void readLogFile();
+    }
 
     return {
       success: true,
@@ -91,36 +153,47 @@ export const readLogFile = async () => {
     return;
   }
 
+  if (isReading) {
+    hasPendingRead = true;
+    return;
+  }
+
+  isReading = true;
+
   try {
     const stats = await fs.promises.stat(logFilePath);
     const currentSize = stats.size;
 
+    if (currentSize < lastSize) {
+      lastSize = getInitialReadOffset(currentSize);
+      dropPartialLeadingLine = lastSize > 0;
+      log.info(`Log file was truncated. Resetting read offset to ${lastSize}.`);
+    }
+
     if (currentSize > lastSize) {
-      // Only read the new content from where we left off
-      const stream = fs.createReadStream(logFilePath, {
-        start: lastSize,
-        encoding: 'utf8'
-      });
+      const newContent = await readFileSlice(
+        logFilePath,
+        lastSize,
+        currentSize - 1,
+        dropPartialLeadingLine
+      );
 
-      let newContent = '';
-      stream.on('data', (chunk) => {
-        console.log('chunk', chunk);
-        newContent += chunk;
-      });
+      lastSize = currentSize;
+      dropPartialLeadingLine = false;
 
-      stream.on('end', () => {
-        if (newContent.trim()) {
-          processNewLogContent(newContent);
-        }
-        lastSize = currentSize;
-      });
-
-      stream.on('error', (err) => {
-        log.error('Error reading log file:', err);
-      });
+      if (newContent.trim()) {
+        processNewLogContent(newContent);
+      }
     }
   } catch (err) {
     log.error('Error accessing log file:', err);
+  } finally {
+    isReading = false;
+
+    if (hasPendingRead) {
+      hasPendingRead = false;
+      void readLogFile();
+    }
   }
 };
 
@@ -129,32 +202,29 @@ export const readLogFile = async () => {
  * @param {string} content - New log content to process
  */
 const processNewLogContent = (content) => {
-  log.info('=== New log entries detected ===');
-
   // Split by lines and process each line
-  const lines = content.split('\n').filter(line => line.trim());
+  const lines = content.split(/\r?\n/).filter(line => line.trim());
   const parsedEntries = parseLogLines(lines);
+  let matchedEntries = 0;
+  let newGroups = 0;
+  let unmatchedEntries = 0;
 
   parsedEntries.forEach(parsed => {
     if (parsed.uuid && parsed.logInfo) {
+      matchedEntries += 1;
       const result = addLogEntry(parsed.uuid, parsed.content, parsed.logInfo);
 
       if (result.isNewEntry) {
-        log.info(`🆕 New ${parsed.logInfo.type} entry started: ${parsed.uuid} (${parsed.logInfo.subType})`);
-      } else {
-        log.info(`📝 Additional entry for: ${parsed.uuid} (${parsed.logInfo.type}/${parsed.logInfo.subType})`);
+        newGroups += 1;
       }
     } else {
-      log.info(`❓ Unmatched log: ${parsed.content}`);
+      unmatchedEntries += 1;
     }
   });
 
-  // Optionally display summary for larger batches
-  if (lines.length >= 5) {
-    displayLogsByUuid();
-  }
-
-  log.info('=== End of new entries ===\n');
+  log.info(
+    `Processed ${lines.length} log lines (${matchedEntries} matched, ${newGroups} new groups, ${unmatchedEntries} unmatched)`
+  );
 
   // Notify callback if set
   if (onLogDataCallback) {

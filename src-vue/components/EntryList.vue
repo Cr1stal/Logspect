@@ -1,15 +1,15 @@
 <template>
   <div class="entries-panel">
     <div class="panel-header">
-      Entries ({{ displayedEntries.length }})
+      {{ listLabel }} ({{ displayedEntries.length }})
     </div>
 
     <div class="entries-list">
-      <div v-if="totalEntries === 0" class="empty-state">
+      <div v-if="displayedEntries.length === 0" class="empty-state">
         <div class="empty-icon">
           <FileText :size="48" class="opacity-50" />
         </div>
-        <div>No log entries detected yet</div>
+        <div>{{ emptyMessage }}</div>
       </div>
 
       <div
@@ -25,8 +25,8 @@
           <div class="entry-title-text">{{ entry.title }}</div>
           <div class="entry-uuid">{{ entry.uuid }}</div>
           <div class="entry-meta">
-            <span class="entry-count">{{ entry.entriesCount }} entries</span>
-            <span>{{ formatTime(entry.lastSeen) }}</span>
+            <span class="entry-count">{{ formatEntryCount(entry) }}</span>
+            <span>{{ formatEntryPosition(entry) }}</span>
           </div>
           <div v-if="Object.keys(entry.metadata || {}).length > 0" class="entry-metadata">
             <span v-if="entry.metadata.responseTime" class="metadata-item">
@@ -79,6 +79,18 @@ export default {
     activeCategories: {
       type: Array,
       default: () => ['all']
+    },
+    searchMode: {
+      type: String,
+      default: 'local'
+    },
+    emptyMessage: {
+      type: String,
+      default: 'No log entries detected yet'
+    },
+    listLabel: {
+      type: String,
+      default: 'Entries'
     }
   },
   data() {
@@ -100,7 +112,7 @@ export default {
 
       // Apply search filter
       const searchTerm = this.searchTerm.trim();
-      if (searchTerm) {
+      if (this.searchMode === 'local' && searchTerm) {
         if (this.miniSearch && this.searchResults.length > 0) {
           // Use MiniSearch results
           const searchResultUuids = new Set(this.searchResults.map(result => result.id));
@@ -118,6 +130,12 @@ export default {
 
       // Apply sorting
       const sorted = [...filteredEntries].sort((a, b) => {
+        if (a.searchMeta?.isDiskSearchResult || b.searchMeta?.isDiskSearchResult) {
+          const lineA = a.searchMeta?.firstLineNumber || 0
+          const lineB = b.searchMeta?.firstLineNumber || 0
+          return this.invertOrder ? lineB - lineA : lineA - lineB
+        }
+
         const dateA = new Date(a.firstSeen);
         const dateB = new Date(b.firstSeen);
         return this.invertOrder ? dateB - dateA : dateA - dateB;
@@ -128,15 +146,36 @@ export default {
   },
   watch: {
     entries: {
-      handler: 'rebuildSearchIndex',
+      handler() {
+        if (this.searchMode === 'local') {
+          this.rebuildSearchIndex()
+        } else {
+          this.searchResults = []
+        }
+      },
       deep: true
     },
     searchTerm: {
-      handler: 'performSearch'
+      handler() {
+        if (this.searchMode === 'local') {
+          this.performSearch()
+        } else {
+          this.searchResults = []
+        }
+      }
+    },
+    searchMode(nextMode) {
+      if (nextMode === 'local') {
+        this.initializeSearch()
+      } else {
+        this.searchResults = []
+      }
     }
   },
   mounted() {
-    this.initializeSearch();
+    if (this.searchMode === 'local') {
+      this.initializeSearch();
+    }
   },
   methods: {
     initializeSearch() {
@@ -173,7 +212,7 @@ export default {
       this.rebuildSearchIndex();
     },
     rebuildSearchIndex() {
-      if (!this.miniSearch || !this.entries.length) return;
+      if (this.searchMode !== 'local' || !this.miniSearch || !this.entries.length) return;
 
       try {
         // Clear existing index
@@ -200,7 +239,7 @@ export default {
       }
     },
     performSearch() {
-      if (!this.miniSearch || !this.searchTerm.trim()) {
+      if (this.searchMode !== 'local' || !this.miniSearch || !this.searchTerm.trim()) {
         this.searchResults = [];
         return;
       }
@@ -227,6 +266,20 @@ export default {
     },
     formatTime(timestamp) {
       return new Date(timestamp).toLocaleTimeString();
+    },
+    formatEntryCount(entry) {
+      const label = entry.searchMeta?.isDiskSearchResult ? 'matches' : 'entries'
+      return `${entry.entriesCount} ${label}`
+    },
+    formatEntryPosition(entry) {
+      if (entry.searchMeta?.isDiskSearchResult) {
+        const { firstLineNumber, lastLineNumber } = entry.searchMeta
+        return firstLineNumber === lastLineNumber
+          ? `Line ${firstLineNumber}`
+          : `Lines ${firstLineNumber}-${lastLineNumber}`
+      }
+
+      return this.formatTime(entry.lastSeen)
     }
   },
   emits: ['select-entry']

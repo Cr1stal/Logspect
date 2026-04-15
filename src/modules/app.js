@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import log from "electron-log";
 import { isDev } from './devtools.js';
 import { setupIpcHandlers, setMainWindow, streamDataToRenderer } from './ipcHandlers.js';
+import { setLogIndexStorageDirectory } from './logIndex.js';
 import { setLogDataCallback } from './logWatcher.js';
 import { createMenu } from './menu.js';
 import { setupAutoUpdater, checkForUpdatesOnStartup } from './autoUpdater.js';
@@ -71,6 +72,7 @@ export const initializeApp = () => {
   setupIpcHandlers();
 
   app.whenReady().then(async () => {
+    setLogIndexStorageDirectory(path.join(app.getPath('userData'), 'log-indexes'));
     await createWindow();
 
     // Set up auto-updater event handlers

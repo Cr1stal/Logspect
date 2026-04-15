@@ -19,8 +19,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
   browseProjectLogFile: () => ipcRenderer.invoke('browse-project-log-file'),
   getProjectInfo: () => ipcRenderer.invoke('get-project-info'),
   getProjectLogFiles: () => ipcRenderer.invoke('get-project-log-files'),
+  getLogIndexStatus: () => ipcRenderer.invoke('get-log-index-status'),
+  startLogSearch: (query) => ipcRenderer.invoke('start-log-search', query),
+  cancelLogSearch: () => ipcRenderer.invoke('cancel-log-search'),
   onProjectSelected: (callback) => {
     ipcRenderer.on('project-selected', (event, data) => callback(data));
+  },
+  onLogSearchStatus: (callback) => {
+    ipcRenderer.on('log-search-status', (event, data) => callback(data));
+  },
+  onLogSearchResults: (callback) => {
+    ipcRenderer.on('log-search-results', (event, data) => callback(data));
+  },
+  onLogIndexStatus: (callback) => {
+    ipcRenderer.on('log-index-status', (event, data) => callback(data));
   },
   // Recent Projects API
   getRecentProjects: () => ipcRenderer.invoke('get-recent-projects'),
