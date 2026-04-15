@@ -61,9 +61,92 @@ const getEntryLineMeta = (entry) => {
   return null
 }
 
-const mergeEntryCollections = (leftEntries = [], rightEntries = []) => (
-  [...leftEntries, ...rightEntries]
+const hasLineNumber = (entry) => typeof entry?.lineNumber === 'number'
+
+const mergeEntryItems = (leftEntry = {}, rightEntry = {}) => {
+  const preferredEntry = hasLineNumber(rightEntry) && !hasLineNumber(leftEntry)
+    ? rightEntry
+    : leftEntry
+  const fallbackEntry = preferredEntry === leftEntry ? rightEntry : leftEntry
+
+  return {
+    ...fallbackEntry,
+    ...preferredEntry,
+    lineNumber: preferredEntry.lineNumber ?? fallbackEntry.lineNumber,
+    timestamp: preferredEntry.timestamp ?? fallbackEntry.timestamp,
+    content: preferredEntry.content ?? fallbackEntry.content,
+    isMatch: Boolean(leftEntry.isMatch || rightEntry.isMatch)
+  }
+}
+
+const findContainedSequenceStart = (containerEntries = [], candidateEntries = []) => {
+  if (candidateEntries.length === 0 || candidateEntries.length > containerEntries.length) {
+    return -1
+  }
+
+  for (let startIndex = 0; startIndex <= containerEntries.length - candidateEntries.length; startIndex += 1) {
+    const containsSequence = candidateEntries.every((candidateEntry, candidateIndex) => (
+      containerEntries[startIndex + candidateIndex]?.content === candidateEntry?.content
+    ))
+
+    if (containsSequence) {
+      return startIndex
+    }
+  }
+
+  return -1
+}
+
+const mergeContainedEntries = (containerEntries = [], candidateEntries = [], startIndex = 0) => (
+  containerEntries.map((entry, index) => {
+    const candidateEntry = candidateEntries[index - startIndex]
+    return candidateEntry ? mergeEntryItems(entry, candidateEntry) : { ...entry }
+  })
 )
+
+const mergeEntryCollections = (leftEntries = [], rightEntries = []) => {
+  if (leftEntries.length === 0) {
+    return rightEntries.map(entry => ({ ...entry }))
+  }
+
+  if (rightEntries.length === 0) {
+    return leftEntries.map(entry => ({ ...entry }))
+  }
+
+  if (leftEntries.every(hasLineNumber) && rightEntries.every(hasLineNumber)) {
+    const entriesByLineNumber = new Map()
+
+    leftEntries.forEach((entry) => {
+      entriesByLineNumber.set(entry.lineNumber, { ...entry })
+    })
+
+    rightEntries.forEach((entry) => {
+      const existingEntry = entriesByLineNumber.get(entry.lineNumber)
+      entriesByLineNumber.set(
+        entry.lineNumber,
+        existingEntry ? mergeEntryItems(existingEntry, entry) : { ...entry }
+      )
+    })
+
+    return Array.from(entriesByLineNumber.values())
+      .sort((left, right) => left.lineNumber - right.lineNumber)
+  }
+
+  const rightInsideLeftAt = findContainedSequenceStart(leftEntries, rightEntries)
+  if (rightInsideLeftAt >= 0) {
+    return mergeContainedEntries(leftEntries, rightEntries, rightInsideLeftAt)
+  }
+
+  const leftInsideRightAt = findContainedSequenceStart(rightEntries, leftEntries)
+  if (leftInsideRightAt >= 0) {
+    return mergeContainedEntries(rightEntries, leftEntries, leftInsideRightAt)
+  }
+
+  return [
+    ...leftEntries.map(entry => ({ ...entry })),
+    ...rightEntries.map(entry => ({ ...entry }))
+  ]
+}
 
 const mergeLogGroups = (baseEntry, incomingEntry) => {
   const mergedEntries = mergeEntryCollections(baseEntry.entries, incomingEntry.entries)

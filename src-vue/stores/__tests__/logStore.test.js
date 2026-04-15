@@ -228,6 +228,119 @@ describe('logStore selectedEntry', () => {
     })
   })
 
+  it('deduplicates overlapping indexed and live bodies for the same group', () => {
+    const store = useLogStore()
+
+    store.indexedViewer = {
+      active: true,
+      loading: false,
+      hasMore: false,
+      nextCursor: null,
+      coveredBytes: 100,
+      totalBytes: 100,
+      entries: [
+        createIndexedViewerEntry({
+          uuid: 'group-1',
+          entriesCount: 2,
+          entries: [
+            { content: 'request booted', timestamp: '1970-01-01T00:00:00.000Z', lineNumber: 1 },
+            { content: 'rendering response', timestamp: '1970-01-01T00:00:00.000Z', lineNumber: 2 }
+          ]
+        })
+      ]
+    }
+    store.logData = {
+      totalEntries: 1,
+      entries: [
+        createLiveEntry({
+          uuid: 'group-1',
+          entriesCount: 3,
+          entries: [
+            { content: 'request booted', timestamp: '2024-01-01T00:00:00.000Z' },
+            { content: 'rendering response', timestamp: '2024-01-01T00:00:01.000Z' },
+            { content: 'request completed', timestamp: '2024-01-01T00:00:02.000Z' }
+          ]
+        })
+      ]
+    }
+
+    expect(store.viewerLogData.entries.find(entry => entry.uuid === 'group-1').entriesCount).toBe(3)
+    expect(store.viewerLogData.entries.find(entry => entry.uuid === 'group-1').entries.map(entry => entry.content)).toEqual([
+      'request booted',
+      'rendering response',
+      'request completed'
+    ])
+  })
+
+  it('keeps search result bodies from duplicating when viewer data overlaps the same group', () => {
+    const store = useLogStore()
+
+    store.searchTerm = 'callback'
+    store.selectedUuid = 'group-1'
+    store.indexedViewer = {
+      active: true,
+      loading: false,
+      hasMore: false,
+      nextCursor: null,
+      coveredBytes: 100,
+      totalBytes: 100,
+      entries: [
+        createIndexedViewerEntry({
+          uuid: 'group-1',
+          entriesCount: 2,
+          entries: [
+            { content: 'request booted', timestamp: '1970-01-01T00:00:00.000Z', lineNumber: 1 },
+            { content: 'callback timeout', timestamp: '1970-01-01T00:00:00.000Z', lineNumber: 2 }
+          ]
+        })
+      ]
+    }
+    store.logData = {
+      totalEntries: 1,
+      entries: [
+        createLiveEntry({
+          uuid: 'group-1',
+          entriesCount: 3,
+          entries: [
+            { content: 'request booted', timestamp: '2024-01-01T00:00:00.000Z' },
+            { content: 'callback timeout', timestamp: '2024-01-01T00:00:01.000Z' },
+            { content: 'request completed', timestamp: '2024-01-01T00:00:02.000Z' }
+          ]
+        })
+      ]
+    }
+    store.diskSearch = {
+      ...store.diskSearch,
+      status: 'completed',
+      query: 'callback',
+      results: {
+        totalEntries: 1,
+        entries: [
+          createDiskSearchEntry({
+            entriesCount: 3,
+            searchMeta: {
+              firstLineNumber: 2,
+              lastLineNumber: 2,
+              matchedLineNumbers: [2]
+            },
+            entries: [
+              { content: 'request booted', timestamp: '1970-01-01T00:00:00.000Z', lineNumber: 1 },
+              { content: 'callback timeout', timestamp: '1970-01-01T00:00:00.000Z', lineNumber: 2, isMatch: true },
+              { content: 'request completed', timestamp: '1970-01-01T00:00:00.000Z', lineNumber: 3 }
+            ]
+          })
+        ]
+      }
+    }
+
+    expect(store.selectedEntry.entriesCount).toBe(3)
+    expect(store.selectedEntry.entries.map(entry => entry.content)).toEqual([
+      'request booted',
+      'callback timeout',
+      'request completed'
+    ])
+  })
+
   it('cancels the active disk search when the draft query changes', async () => {
     const store = useLogStore()
 
