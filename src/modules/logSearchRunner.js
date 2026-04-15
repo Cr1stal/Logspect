@@ -100,6 +100,7 @@ const createStoredGroup = (record, lineNumber) => {
       groupFirstLineNumber: lineNumber,
       groupLastLineNumber: lineNumber,
       matchedLineCount: 0,
+      matchedLineNumbers: [],
       hasHiddenMatches: false
     }
   };
@@ -125,7 +126,8 @@ const appendRecordToGroup = (group, record, lineNumber) => {
   group.entries.push({
     content: record.content,
     timestamp: group.lastSeen,
-    lineNumber
+    lineNumber,
+    isMatch: group.searchMeta.matchedLineNumbers.includes(lineNumber)
   });
 };
 
@@ -135,13 +137,15 @@ const trackMatchedGroup = (matchedGroups, record, lineNumber) => {
     existingGroup.matchedLineCount += 1;
     existingGroup.firstLineNumber = Math.min(existingGroup.firstLineNumber, lineNumber);
     existingGroup.lastLineNumber = Math.max(existingGroup.lastLineNumber, lineNumber);
+    existingGroup.matchedLineNumbers.push(lineNumber);
     return existingGroup;
   }
 
   const nextGroup = {
     firstLineNumber: lineNumber,
     lastLineNumber: lineNumber,
-    matchedLineCount: 1
+    matchedLineCount: 1,
+    matchedLineNumbers: [lineNumber]
   };
   matchedGroups.set(record.groupId, nextGroup);
   return nextGroup;
@@ -385,6 +389,7 @@ const runStreamScan = async (
             group.searchMeta.firstLineNumber = matchedGroup.firstLineNumber;
             group.searchMeta.lastLineNumber = matchedGroup.lastLineNumber;
             group.searchMeta.matchedLineCount = matchedGroup.matchedLineCount;
+            group.searchMeta.matchedLineNumbers = [...matchedGroup.matchedLineNumbers];
             group.searchMeta.groupFirstLineNumber = fullGroupLineNumber;
             group.searchMeta.groupLastLineNumber = fullGroupLineNumber;
             resultsByGroup.set(record.groupId, group);

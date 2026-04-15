@@ -23,6 +23,7 @@ const createDiskSearchEntry = ({
     firstLineNumber: 2,
     lastLineNumber: 2,
     matchedLineCount: 1,
+    matchedLineNumbers: [2],
     hasHiddenMatches: false,
     ...searchMeta
   }
@@ -106,8 +107,13 @@ describe('logStore selectedEntry', () => {
         entries: [
           createDiskSearchEntry({
             entriesCount: 1,
+            searchMeta: {
+              firstLineNumber: 3,
+              lastLineNumber: 3,
+              matchedLineNumbers: [3]
+            },
             entries: [
-              { content: 'callback timeout', timestamp: '1970-01-01T00:00:00.000Z', lineNumber: 3 }
+              { content: 'callback timeout', timestamp: '1970-01-01T00:00:00.000Z', lineNumber: 3, isMatch: true }
             ]
           })
         ]
@@ -119,6 +125,11 @@ describe('logStore selectedEntry', () => {
       'request booted',
       'rendering response',
       'callback timeout'
+    ])
+    expect(store.selectedEntry.entries.map(entry => entry.isMatch)).toEqual([
+      false,
+      false,
+      true
     ])
   })
 
@@ -148,10 +159,15 @@ describe('logStore selectedEntry', () => {
         entries: [
           createDiskSearchEntry({
             entriesCount: 4,
+            searchMeta: {
+              firstLineNumber: 3,
+              lastLineNumber: 3,
+              matchedLineNumbers: [3]
+            },
             entries: [
               { content: 'request booted', timestamp: '1970-01-01T00:00:00.000Z', lineNumber: 1 },
               { content: 'rendering response', timestamp: '1970-01-01T00:00:00.000Z', lineNumber: 2 },
-              { content: 'callback timeout', timestamp: '1970-01-01T00:00:00.000Z', lineNumber: 3 },
+              { content: 'callback timeout', timestamp: '1970-01-01T00:00:00.000Z', lineNumber: 3, isMatch: true },
               { content: 'request completed', timestamp: '1970-01-01T00:00:00.000Z', lineNumber: 4 }
             ]
           })
@@ -161,6 +177,7 @@ describe('logStore selectedEntry', () => {
 
     expect(store.selectedEntry.entriesCount).toBe(4)
     expect(store.selectedEntry.entries.map(entry => entry.lineNumber)).toEqual([1, 2, 3, 4])
+    expect(store.selectedEntry.entries.map(entry => entry.isMatch)).toEqual([false, false, true, false])
   })
 
   it('merges indexed viewer groups with new live entries for the same uuid', () => {
