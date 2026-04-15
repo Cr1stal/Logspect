@@ -41,6 +41,55 @@
             </div>
 
             <div
+              v-else-if="item.kind === 'stack-block'"
+              :class="['timeline-entry', 'timeline-entry--stack-block', { 'timeline-entry--expanded': isStackBlockExpanded(item) }]"
+            >
+              <div class="timeline-gutter">
+                <div class="timeline-line-number">{{ item.entries.length }} lines</div>
+                <div class="timeline-marker" />
+              </div>
+
+              <div class="timeline-main">
+                <div class="timeline-meta">
+                  <span class="timeline-entry-kind">Stack Trace</span>
+                  <span class="timeline-entry-position">{{ lineRangeLabel(item) }}</span>
+                  <button
+                    type="button"
+                    class="timeline-toggle-btn"
+                    @click="toggleStackBlock(item)"
+                  >
+                    {{ isStackBlockExpanded(item) ? 'Hide stack trace' : 'Show stack trace' }}
+                  </button>
+                  <button
+                    type="button"
+                    class="timeline-copy-btn"
+                    :title="copyLabelForKey(item.key)"
+                    @click="copyToClipboard(stackBlockText(item), item.key)"
+                  >
+                    <Copy :size="12" />
+                    {{ copyLabelForKey(item.key) }}
+                  </button>
+                </div>
+
+                <div v-if="isStackBlockExpanded(item)" class="stack-block-content">
+                  <div
+                    v-for="stackEntry in item.entries"
+                    :key="stackEntry.key"
+                    class="stack-block-line"
+                  >
+                    <span class="stack-block-line-number">
+                      {{ entryLineLabel(stackEntry.entry, stackEntry.index) }}
+                    </span>
+                    <pre class="timeline-content-text">{{ stackEntry.entry.content }}</pre>
+                  </div>
+                </div>
+                <div v-else class="stack-block-preview">
+                  {{ stackBlockPreview(item) }}
+                </div>
+              </div>
+            </div>
+
+            <div
               v-else
               :class="timelineEntryClasses(item.entry)"
             >
@@ -70,7 +119,25 @@
                   </button>
                 </div>
 
-                <div class="timeline-content">{{ item.entry.content }}</div>
+                <div class="timeline-content">
+                  <pre
+                    v-if="isPayloadCollapsed(item.entry, item.index)"
+                    class="timeline-content-text timeline-content-text--collapsed"
+                  >{{ payloadPreview(item.entry) }}</pre>
+                  <pre
+                    v-else
+                    class="timeline-content-text"
+                  >{{ item.entry.content }}</pre>
+
+                  <button
+                    v-if="isPayloadExpandable(item.entry)"
+                    type="button"
+                    class="timeline-toggle-btn"
+                    @click="togglePayload(item.entry, item.index)"
+                  >
+                    {{ isPayloadCollapsed(item.entry, item.index) ? 'Show payload' : 'Hide payload' }}
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -105,6 +172,10 @@
 <script>
 import { ClipboardList, Copy } from 'lucide-vue-next'
 
+const STACK_TRACE_COLLAPSE_MIN_LINES = 4
+const PAYLOAD_COLLAPSE_MIN_LENGTH = 220
+const PAYLOAD_PREVIEW_LENGTH = 180
+
 export default {
   name: 'EntryDetails',
   components: {
@@ -114,7 +185,9 @@ export default {
   data() {
     return {
       activeView: 'readable',
-      copiedEntryKey: null
+      copiedEntryKey: null,
+      expandedPayloadEntries: {},
+      expandedStackBlocks: {}
     }
   },
   props: {
@@ -165,15 +238,41 @@ export default {
       return [...this.selectedEntry.entries].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
     },
     timelineItems() {
-      if (this.activeView !== 'search' || !this.hasSearchContext) {
-        return this.sortedEntries.map((entry, index) => ({
-          kind: 'entry',
-          key: this.entryKey(entry, index),
-          entry,
-          index
-        }))
+      const baseItems = this.activeView !== 'search' || !this.hasSearchContext
+        ? this.sortedEntries.map((entry, index) => ({
+            kind: 'entry',
+            key: this.entryKey(entry, index),
+            entry,
+            index
+          }))
+        : this.buildSearchContextItems()
+
+      if (this.activeView !== 'readable') {
+        return baseItems
       }
 
+      return this.collapseStackTraceRuns(baseItems)
+    }
+  },
+  watch: {
+    selectedEntry: {
+      handler() {
+        this.copiedEntryKey = null
+        this.expandedPayloadEntries = {}
+        this.expandedStackBlocks = {}
+        if (!this.detailViews.some(view => view.value === this.activeView)) {
+          this.activeView = 'readable'
+        }
+        if (this.autoScroll) {
+          this.$nextTick(() => {
+            this.scrollToTop();
+          });
+        }
+      }
+    }
+  },
+  methods: {
+    buildSearchContextItems() {
       const includedIndexes = new Set()
 
       this.sortedEntries.forEach((entry, index) => {
@@ -214,24 +313,49 @@ export default {
       })
 
       return items
-    }
-  },
-  watch: {
-    selectedEntry: {
-      handler() {
-        this.copiedEntryKey = null
-        if (!this.detailViews.some(view => view.value === this.activeView)) {
-          this.activeView = 'readable'
+    },
+    collapseStackTraceRuns(items) {
+      const collapsedItems = []
+
+      for (let index = 0; index < items.length; index += 1) {
+        const item = items[index]
+
+        if (item.kind !== 'entry' || !this.isStackTraceEntry(item.entry)) {
+          collapsedItems.push(item)
+          continue
         }
-        if (this.autoScroll) {
-          this.$nextTick(() => {
-            this.scrollToTop();
-          });
+
+        const run = [item]
+        let runIndex = index + 1
+
+        while (runIndex < items.length) {
+          const candidate = items[runIndex]
+          if (candidate.kind !== 'entry' || !this.isStackTraceEntry(candidate.entry)) {
+            break
+          }
+
+          run.push(candidate)
+          runIndex += 1
         }
+
+        if (run.length < STACK_TRACE_COLLAPSE_MIN_LINES || run.some(candidate => candidate.entry.isMatch)) {
+          collapsedItems.push(...run)
+          index = runIndex - 1
+          continue
+        }
+
+        collapsedItems.push({
+          kind: 'stack-block',
+          key: `stack-${run[0].key}-${run[run.length - 1].key}`,
+          entries: run,
+          startLineLabel: this.entryLineLabel(run[0].entry, run[0].index),
+          endLineLabel: this.entryLineLabel(run[run.length - 1].entry, run[run.length - 1].index)
+        })
+        index = runIndex - 1
       }
-    }
-  },
-  methods: {
+
+      return collapsedItems
+    },
     formatDateTime(timestamp) {
       return new Date(timestamp).toLocaleString();
     },
@@ -260,6 +384,21 @@ export default {
     entryLineLabel(entry, index) {
       return entry.lineNumber || index + 1;
     },
+    lineRangeLabel(item) {
+      return item.startLineLabel === item.endLineLabel
+        ? `Line ${item.startLineLabel}`
+        : `Lines ${item.startLineLabel}-${item.endLineLabel}`
+    },
+    isStackTraceEntry(entry) {
+      const content = entry.content.trim()
+
+      return Boolean(
+        content.match(/^from\s+/) ||
+        content.match(/^(\/|[A-Z]:\\|app\/|lib\/|config\/|test\/|spec\/).+:\d+(?::in\b.*)?$/) ||
+        content.match(/^[\w./:-]+:\d+(?::in\b.*)?$/) ||
+        content.match(/^↳\s+/)
+      )
+    },
     timelineEntryClasses(entry) {
       return [
         'timeline-entry',
@@ -269,6 +408,69 @@ export default {
           'timeline-entry--context': this.activeView === 'search' && !entry.isMatch
         }
       ]
+    },
+    isPayloadLikeEntry(entry) {
+      const content = entry.content.trim()
+
+      return Boolean(
+        content.match(/^Parameters:/i) ||
+        content.match(/^params[=:]/i) ||
+        content.startsWith('{') ||
+        content.startsWith('[') ||
+        content.includes('=>') ||
+        content.includes('":{"') ||
+        content.match(/^\w+:\s*[{[]/)
+      )
+    },
+    isPayloadCollapsed(entry, index) {
+      return (
+        this.activeView === 'readable' &&
+        !entry.isMatch &&
+        entry.content.length >= PAYLOAD_COLLAPSE_MIN_LENGTH &&
+        this.isPayloadLikeEntry(entry) &&
+        !this.expandedPayloadEntries[this.entryKey(entry, index)]
+      )
+    },
+    isPayloadExpandable(entry) {
+      return (
+        this.activeView === 'readable' &&
+        !entry.isMatch &&
+        entry.content.length >= PAYLOAD_COLLAPSE_MIN_LENGTH &&
+        this.isPayloadLikeEntry(entry)
+      )
+    },
+    togglePayload(entry, index) {
+      const key = this.entryKey(entry, index)
+      this.expandedPayloadEntries = {
+        ...this.expandedPayloadEntries,
+        [key]: !this.expandedPayloadEntries[key]
+      }
+    },
+    payloadPreview(entry) {
+      const preview = entry.content.slice(0, PAYLOAD_PREVIEW_LENGTH).trimEnd()
+      return preview.length < entry.content.length ? `${preview}…` : preview
+    },
+    isStackBlockExpanded(item) {
+      return Boolean(this.expandedStackBlocks[item.key])
+    },
+    toggleStackBlock(item) {
+      this.expandedStackBlocks = {
+        ...this.expandedStackBlocks,
+        [item.key]: !this.expandedStackBlocks[item.key]
+      }
+    },
+    stackBlockPreview(item) {
+      const firstLine = item.entries[0]?.entry?.content || ''
+      if (!firstLine) {
+        return `${item.entries.length} stack frames hidden`
+      }
+
+      return firstLine.length > PAYLOAD_PREVIEW_LENGTH
+        ? `${firstLine.slice(0, PAYLOAD_PREVIEW_LENGTH).trimEnd()}…`
+        : firstLine
+    },
+    stackBlockText(item) {
+      return item.entries.map(candidate => candidate.entry.content).join('\n')
     },
     entryTone(entry) {
       const content = entry.content.toLowerCase();
@@ -321,6 +523,9 @@ export default {
     },
     copyLabel(entry, index) {
       return this.copiedEntryKey === this.entryKey(entry, index) ? 'Copied' : 'Copy';
+    },
+    copyLabelForKey(key) {
+      return this.copiedEntryKey === key ? 'Copied' : 'Copy';
     },
     async copyToClipboard(text, entryKey) {
       await navigator.clipboard.writeText(text);
@@ -424,7 +629,11 @@ export default {
 }
 
 .timeline-copy-btn {
-  @apply ml-auto inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded border border-slate-700 text-slate-300 hover:bg-slate-800 transition-colors;
+  @apply inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded border border-slate-700 text-slate-300 hover:bg-slate-800 transition-colors;
+}
+
+.timeline-toggle-btn {
+  @apply ml-auto text-[10px] px-2 py-1 rounded border border-slate-700 text-slate-300 hover:bg-slate-800 transition-colors;
 }
 
 .timeline-match-badge {
@@ -432,7 +641,15 @@ export default {
 }
 
 .timeline-content {
-  @apply text-xs leading-6 text-slate-100 whitespace-pre-wrap break-normal overflow-x-auto;
+  @apply flex flex-col items-start gap-2;
+}
+
+.timeline-content-text {
+  @apply w-full text-xs leading-6 text-slate-100 whitespace-pre-wrap break-normal overflow-x-auto;
+}
+
+.timeline-content-text--collapsed {
+  @apply text-slate-300;
 }
 
 .timeline-entry--default {
@@ -507,6 +724,35 @@ export default {
 
 .timeline-entry--context {
   @apply opacity-75;
+}
+
+.timeline-entry--stack-block {
+  @apply border-slate-700/80 bg-slate-950/80;
+}
+
+.timeline-entry--stack-block .timeline-marker,
+.timeline-entry--stack-block .timeline-entry-kind {
+  @apply bg-slate-600 border-slate-500 text-slate-100;
+}
+
+.timeline-entry--expanded {
+  @apply border-slate-600;
+}
+
+.stack-block-preview {
+  @apply text-xs leading-6 text-slate-300;
+}
+
+.stack-block-content {
+  @apply flex flex-col gap-2;
+}
+
+.stack-block-line {
+  @apply grid grid-cols-[3.5rem_minmax(0,1fr)] gap-3 items-start rounded border border-slate-800 bg-slate-900/50 px-2 py-2;
+}
+
+.stack-block-line-number {
+  @apply text-[10px] text-slate-500 text-center pt-1;
 }
 
 .raw-view {
