@@ -71,9 +71,28 @@ const waitForSearchCompletion = async (logFilePath, query) => {
   });
 };
 
+const waitForIndexReady = async (logFilePath, storageDirectory) => {
+  const {
+    getLogIndexStatus,
+    setLogIndexStorageDirectory,
+    startLogIndexing
+  } = await import('../logIndex.js');
+
+  setLogIndexStorageDirectory(storageDirectory);
+  await startLogIndexing(logFilePath, { waitForCompletion: true });
+
+  const status = getLogIndexStatus();
+  if (status.logFilePath === logFilePath && status.status === 'ready') {
+    return status;
+  }
+
+  throw new Error(`Unexpected index status: ${JSON.stringify(status)}`);
+};
+
 afterEach(async () => {
   const { cancelActiveLogSearch } = await import('../logSearch.js');
   cancelActiveLogSearch();
+  vi.doUnmock('../logIndex.js');
 
   await Promise.all(temporaryDirectories.splice(0).map((directoryPath) => (
     fs.promises.rm(directoryPath, { recursive: true, force: true })
@@ -119,10 +138,34 @@ describe('logSearch', () => {
     expect(finalResults.summary.matchedLines).toBe(1);
     expect(finalResults.entries[0].searchMeta).toMatchObject({
       isDiskSearchResult: true,
+      matchedLineCount: 1,
       firstLineNumber: 3,
       lastLineNumber: 3
     });
-    expect(finalResults.entries[0].entries[0].lineNumber).toBe(3);
+    expect(finalResults.entries[0].entries.map(entry => entry.lineNumber)).toEqual([2, 3]);
+  });
+
+  it('returns the full matched group instead of only the matching lines', async () => {
+    const logFilePath = await createTempLogFile([
+      '[aa32797f-b087-4d45-9d99-28198952a784] INFO: request booted',
+      '[aa32797f-b087-4d45-9d99-28198952a784] DEBUG: rendering response',
+      '[aa32797f-b087-4d45-9d99-28198952a784] ERROR: callback timeout'
+    ].join('\n'));
+
+    const { resultsEvents } = await waitForSearchCompletion(logFilePath, 'callback timeout');
+    const finalResults = resultsEvents.at(-1);
+
+    expect(finalResults.summary.matchedLines).toBe(1);
+    expect(finalResults.entries).toHaveLength(1);
+    expect(finalResults.entries[0].entriesCount).toBe(3);
+    expect(finalResults.entries[0].searchMeta).toMatchObject({
+      matchedLineCount: 1,
+      firstLineNumber: 3,
+      lastLineNumber: 3,
+      groupFirstLineNumber: 1,
+      groupLastLineNumber: 3
+    });
+    expect(finalResults.entries[0].entries.map(entry => entry.lineNumber)).toEqual([1, 2, 3]);
   });
 
   it('falls back to a stream scan when indexed search throws unexpectedly', async () => {
@@ -152,5 +195,33 @@ describe('logSearch', () => {
     expect(finalResults.entries).toHaveLength(1);
     expect(finalResults.entries[0].uuid).toBe('aa32797f-b087-4d45-9d99-28198952a784');
     expect(finalResults.entries[0].entries[0].lineNumber).toBe(1);
+  });
+
+  it('keeps using sqlite search when the index is ready but the file has appended lines', async () => {
+    const directoryPath = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'logspect-search-stale-'));
+    temporaryDirectories.push(directoryPath);
+
+    const logFilePath = path.join(directoryPath, 'search.log');
+    await fs.promises.writeFile(
+      logFilePath,
+      '[aa32797f-b087-4d45-9d99-28198952a784] ERROR: callback timeout',
+      'utf8'
+    );
+
+    await waitForIndexReady(logFilePath, directoryPath);
+    await fs.promises.appendFile(
+      logFilePath,
+      '\n[bb32797f-b087-4d45-9d99-28198952a784] INFO: appended tail'
+    );
+
+    const { resultsEvents, statusEvents } = await waitForSearchCompletion(logFilePath, 'callback timeout');
+    const finalResults = resultsEvents.at(-1);
+    const finalStatus = statusEvents.at(-1);
+
+    expect(finalStatus.status).toBe('completed');
+    expect(finalStatus.backend).toBe('sqlite');
+    expect(finalStatus.bytesProcessed).toBeLessThan(finalStatus.totalBytes);
+    expect(finalResults.entries).toHaveLength(1);
+    expect(finalResults.entries[0].uuid).toBe('aa32797f-b087-4d45-9d99-28198952a784');
   });
 });

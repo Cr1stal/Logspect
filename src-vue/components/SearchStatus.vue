@@ -89,6 +89,10 @@ export default {
         return `Searching whole file for "${this.query}"`
       }
 
+      if (this.backend === 'sqlite' && this.totalBytes > 0 && this.bytesProcessed < this.totalBytes) {
+        return `Search complete for "${this.query}" (index catching up)`
+      }
+
       return `Search complete for "${this.query}"`
     },
     metaText() {
@@ -99,7 +103,7 @@ export default {
       const parts = []
 
       if (this.backend === 'sqlite') {
-        parts.push('SQLite index')
+        parts.push(this.totalBytes > 0 && this.bytesProcessed < this.totalBytes ? 'SQLite index (refreshing latest lines)' : 'SQLite index')
       } else if (this.backend === 'scan') {
         parts.push('Stream scan')
       }

@@ -6,6 +6,8 @@ import { startWatching, getWatchingStatus } from './logWatcher.js';
 import { getFormattedLogData, clearAllLogData } from './logStorage.js';
 import {
   cancelLogIndexing,
+  getIndexedLogViewPage,
+  getIndexedLogViewState,
   getLogIndexStatus,
   setLogIndexStatusCallback,
   startLogIndexing
@@ -101,10 +103,22 @@ export const setupIpcHandlers = () => {
     const watchingStatus = getWatchingStatus();
     const isSameSource = projectDirectory === projectResult.projectPath &&
       watchingStatus.logFilePath === projectResult.logPath;
+    const indexedViewState = isSameSource
+      ? { success: false }
+      : await getIndexedLogViewState(projectResult.logPath).catch((error) => {
+        log.warn('Failed to read indexed log view state:', error);
+        return { success: false };
+      });
 
     const watchResult = (isSameSource && watchingStatus.isWatching)
       ? { success: true }
-      : await startWatching(projectResult.logPath);
+      : await startWatching(projectResult.logPath, indexedViewState.success
+        ? {
+            startOffset: indexedViewState.coveredBytes,
+            loadExistingContent: indexedViewState.coveredBytes < indexedViewState.totalBytes,
+            startOffsetAtLineBoundary: true
+          }
+        : undefined);
 
     if (!watchResult.success) {
       return {
@@ -359,6 +373,38 @@ export const setupIpcHandlers = () => {
   // Handler for when renderer requests log data
   ipcMain.handle('get-log-data', () => {
     return getFormattedLogData();
+  });
+
+  ipcMain.handle('get-log-view-page', async (event, options = {}) => {
+    try {
+      const watchingStatus = getWatchingStatus();
+      if (!projectDirectory || !watchingStatus.logFilePath) {
+        return {
+          success: false,
+          message: 'Select a Rails project before loading log entries.'
+        };
+      }
+
+      const result = await getIndexedLogViewPage(watchingStatus.logFilePath, options);
+      if (!result.success) {
+        return {
+          success: true,
+          mode: 'live'
+        };
+      }
+
+      return {
+        success: true,
+        mode: 'indexed',
+        ...result
+      };
+    } catch (error) {
+      console.error('Error loading indexed log page:', error);
+      return {
+        success: false,
+        message: `Error: ${error.message}`
+      };
+    }
   });
 
   // Handler to clear all log data

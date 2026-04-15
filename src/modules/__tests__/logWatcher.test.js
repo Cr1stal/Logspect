@@ -97,4 +97,45 @@ describe('logWatcher', () => {
     expect(data.entries[0].uuid).toBe('bb32797f-b087-4d45-9d99-28198952a784');
     expect(data.entries[0].entries[0].content).toBe('Completed 200 OK in 9ms');
   });
+
+  it('can start from an indexed offset without reloading old history', async () => {
+    const logFilePath = await createTempLogFile([
+      '[aa32797f-b087-4d45-9d99-28198952a784] Started GET /users',
+      '[aa32797f-b087-4d45-9d99-28198952a784] Completed 200 OK in 12ms'
+    ].join('\n'));
+
+    const initialSize = (await fs.promises.stat(logFilePath)).size;
+    const { startWatching, setLogDataCallback } = await import('../logWatcher.js');
+    const { getFormattedLogData } = await import('../logStorage.js');
+
+    await startWatching(logFilePath, {
+      startOffset: initialSize,
+      loadExistingContent: false,
+      startOffsetAtLineBoundary: true
+    });
+
+    await new Promise((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        reject(new Error('Timed out waiting for appended log line'));
+      }, 3000);
+
+      setLogDataCallback(() => {
+        clearTimeout(timeoutId);
+        resolve();
+      });
+
+      fs.promises.appendFile(
+        logFilePath,
+        '\n[bb32797f-b087-4d45-9d99-28198952a784] Completed 500 Failed in 3ms'
+      ).catch((error) => {
+        clearTimeout(timeoutId);
+        reject(error);
+      });
+    });
+
+    const data = getFormattedLogData();
+
+    expect(data.totalEntries).toBe(1);
+    expect(data.entries[0].uuid).toBe('bb32797f-b087-4d45-9d99-28198952a784');
+  });
 });

@@ -9,9 +9,9 @@ import log from 'electron-log';
 import { extractLogInfo, jidRegex, uuidRegex } from './logParser.js';
 
 const INDEX_STREAM_HIGH_WATER_MARK = 256 * 1024;
-const INDEX_BATCH_SIZE = 500;
+const INDEX_BATCH_SIZE = 2000;
 const INDEX_PROGRESS_INTERVAL_MS = 150;
-const INDEX_YIELD_EVERY_N_LINES = 2000;
+const INDEX_YIELD_EVERY_N_LINES = 10000;
 const SQLITE_FTS5_TABLE_SQL = `
   CREATE VIRTUAL TABLE IF NOT EXISTS log_lines_fts USING fts5(
     group_id,
@@ -21,6 +21,19 @@ const SQLITE_FTS5_TABLE_SQL = `
     tokenize = 'unicode61'
   );
 `;
+const SQLITE_LOG_LINES_INDEXES_SQL = `
+  CREATE INDEX IF NOT EXISTS idx_log_lines_line_number ON log_lines(line_number);
+  CREATE INDEX IF NOT EXISTS idx_log_lines_group_id ON log_lines(group_id, line_number);
+`;
+const SQLITE_DROP_LOG_LINES_INDEXES_SQL = `
+  DROP INDEX IF EXISTS idx_log_lines_line_number;
+  DROP INDEX IF EXISTS idx_log_lines_group_id;
+`;
+const SQLITE_LOG_GROUPS_INDEXES_SQL = `
+  CREATE INDEX IF NOT EXISTS idx_log_groups_last_line_number ON log_groups(last_line_number DESC);
+  CREATE INDEX IF NOT EXISTS idx_log_groups_first_line_number ON log_groups(first_line_number);
+`;
+const DISK_SEARCH_TIMESTAMP = new Date(0).toISOString();
 
 let BetterSqlite3 = null;
 let sqliteSupported = null;
@@ -143,9 +156,16 @@ const openDatabase = async (dbPath) => {
       metadata_text TEXT NOT NULL
     );
 
-    CREATE INDEX IF NOT EXISTS idx_log_lines_line_number ON log_lines(line_number);
-    CREATE INDEX IF NOT EXISTS idx_log_lines_group_id ON log_lines(group_id, line_number);
+    CREATE TABLE IF NOT EXISTS log_groups (
+      group_id TEXT PRIMARY KEY,
+      first_line_number INTEGER NOT NULL,
+      last_line_number INTEGER NOT NULL,
+      entries_count INTEGER NOT NULL
+    );
   `);
+  ensureLogLineIndexes(db);
+  ensureLogGroupIndexes(db);
+  ensureLogGroupsBackfilled(db);
 
   const supportsFts = supportsFts5(db);
 
@@ -217,10 +237,139 @@ const saveIndexState = (db, {
 
 const clearExistingIndexData = (db) => {
   db.exec('DELETE FROM log_lines;');
+  db.exec('DELETE FROM log_groups;');
 
   if (hasTable(db, 'log_lines_fts')) {
     db.exec('DELETE FROM log_lines_fts;');
   }
+};
+
+const ensureLogLineIndexes = (db) => {
+  db.exec(SQLITE_LOG_LINES_INDEXES_SQL);
+};
+
+const dropLogLineIndexes = (db) => {
+  db.exec(SQLITE_DROP_LOG_LINES_INDEXES_SQL);
+};
+
+const ensureLogGroupIndexes = (db) => {
+  db.exec(SQLITE_LOG_GROUPS_INDEXES_SQL);
+};
+
+const resetFtsTable = (db, supportsFts) => {
+  if (!supportsFts) {
+    return;
+  }
+
+  db.exec('DROP TABLE IF EXISTS log_lines_fts;');
+  db.exec(SQLITE_FTS5_TABLE_SQL);
+};
+
+const backfillFtsTableFromLogLines = (db, supportsFts) => {
+  if (!supportsFts) {
+    return;
+  }
+
+  db.exec(`
+    INSERT INTO log_lines_fts (
+      rowid,
+      group_id,
+      title,
+      content,
+      metadata_text
+    )
+    SELECT
+      id,
+      group_id,
+      title,
+      content,
+      metadata_text
+    FROM log_lines
+    ORDER BY id ASC
+  `);
+};
+
+const hasIndexedRows = (db) => Boolean(
+  db.prepare(`
+    SELECT 1
+    FROM log_lines
+    LIMIT 1
+  `).get()
+);
+
+const hasIndexedGroups = (db) => Boolean(
+  db.prepare(`
+    SELECT 1
+    FROM log_groups
+    LIMIT 1
+  `).get()
+);
+
+const backfillLogGroupsFromLogLines = (db) => {
+  db.exec('DELETE FROM log_groups;');
+  db.exec(`
+    INSERT INTO log_groups (
+      group_id,
+      first_line_number,
+      last_line_number,
+      entries_count
+    )
+    SELECT
+      group_id,
+      MIN(line_number),
+      MAX(line_number),
+      COUNT(*)
+    FROM log_lines
+    GROUP BY group_id
+  `);
+};
+
+const ensureLogGroupsBackfilled = (db) => {
+  if (!hasIndexedRows(db) || hasIndexedGroups(db)) {
+    return;
+  }
+
+  log.info('Backfilling log_groups from existing indexed rows');
+  backfillLogGroupsFromLogLines(db);
+};
+
+const canReadPersistedIndex = (db, persistedState, logFilePath) => {
+  if (!persistedState) {
+    return false;
+  }
+
+  if (persistedState.logFilePath !== path.resolve(logFilePath)) {
+    return false;
+  }
+
+  if (persistedState.status === 'ready') {
+    return true;
+  }
+
+  return (
+    persistedState.status === 'indexing' &&
+    persistedState.indexedBytes > 0 &&
+    persistedState.indexedLineCount > 0 &&
+    hasIndexedRows(db)
+  );
+};
+
+const buildIndexedCoverageState = (persistedState, stats) => {
+  const coveredBytes = Math.min(persistedState.indexedBytes || 0, stats.size);
+  const coverageComplete = (
+    persistedState.status === 'ready' &&
+    persistedState.fileSize === stats.size &&
+    persistedState.indexedBytes === stats.size &&
+    persistedState.fileMtimeMs === stats.mtimeMs
+  );
+
+  return {
+    coveredBytes,
+    coverageComplete,
+    totalBytes: stats.size,
+    indexedLineCount: persistedState.indexedLineCount || 0,
+    needsRefresh: !coverageComplete
+  };
 };
 
 const createIndexRecord = (rawLine, lineNumber) => {
@@ -301,10 +450,17 @@ const isFtsIndexUsable = (db) => {
     return false;
   }
 
-  const lineCount = db.prepare('SELECT COUNT(*) AS count FROM log_lines').get().count;
-  const ftsCount = db.prepare('SELECT COUNT(*) AS count FROM log_lines_fts').get().count;
+  if (!hasIndexedRows(db)) {
+    return true;
+  }
 
-  return lineCount === ftsCount;
+  return Boolean(
+    db.prepare(`
+      SELECT rowid
+      FROM log_lines_fts
+      LIMIT 1
+    `).get()
+  );
 };
 
 const determineIndexMode = (persistedState, stats, logFilePath, forceRebuild, { db, supportsFts }) => {
@@ -325,6 +481,14 @@ const determineIndexMode = (persistedState, stats, logFilePath, forceRebuild, { 
   }
 
   if (stats.size < persistedState.indexedBytes) {
+    return {
+      mode: 'rebuild',
+      indexedBytes: 0,
+      indexedLineCount: 0
+    };
+  }
+
+  if (persistedState.status !== 'ready') {
     return {
       mode: 'rebuild',
       indexedBytes: 0,
@@ -355,10 +519,28 @@ const determineIndexMode = (persistedState, stats, logFilePath, forceRebuild, { 
   };
 };
 
-const flushBatch = (db, batch, insertLineStatement, insertFtsStatement) => {
+const flushBatch = (db, batch, insertLineStatement, insertFtsStatement, upsertGroupStatement) => {
   if (batch.length === 0) {
     return;
   }
+
+  const groupedBatch = new Map();
+  batch.forEach((record) => {
+    const existingGroup = groupedBatch.get(record.groupId);
+    if (existingGroup) {
+      existingGroup.firstLineNumber = Math.min(existingGroup.firstLineNumber, record.lineNumber);
+      existingGroup.lastLineNumber = Math.max(existingGroup.lastLineNumber, record.lineNumber);
+      existingGroup.entriesCount += 1;
+      return;
+    }
+
+    groupedBatch.set(record.groupId, {
+      groupId: record.groupId,
+      firstLineNumber: record.lineNumber,
+      lastLineNumber: record.lineNumber,
+      entriesCount: 1
+    });
+  });
 
   withTransaction(db, () => {
     batch.forEach((record) => {
@@ -384,6 +566,15 @@ const flushBatch = (db, batch, insertLineStatement, insertFtsStatement) => {
         );
       }
     });
+
+    groupedBatch.forEach((group) => {
+      upsertGroupStatement.run(
+        group.groupId,
+        group.firstLineNumber,
+        group.lastLineNumber,
+        group.entriesCount
+      );
+    });
   });
 
   batch.length = 0;
@@ -407,6 +598,7 @@ const runIndexJob = async (job, dbPath, statsSnapshot, mode, baselineState) => {
   }
 
   const { db, supportsFts } = database;
+  const shouldOptimizeRebuild = mode === 'rebuild';
   const startByte = mode === 'append' ? baselineState.indexedBytes : 0;
   let indexedLineCount = mode === 'append' ? baselineState.indexedLineCount : 0;
   let lastProgressEmitAt = 0;
@@ -426,7 +618,7 @@ const runIndexJob = async (job, dbPath, statsSnapshot, mode, baselineState) => {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
-  const insertFtsStatement = supportsFts
+  const insertFtsStatement = supportsFts && !shouldOptimizeRebuild
     ? db.prepare(`
       INSERT INTO log_lines_fts (
         rowid,
@@ -437,10 +629,24 @@ const runIndexJob = async (job, dbPath, statsSnapshot, mode, baselineState) => {
       ) VALUES (?, ?, ?, ?, ?)
     `)
     : null;
+  const upsertGroupStatement = db.prepare(`
+    INSERT INTO log_groups (
+      group_id,
+      first_line_number,
+      last_line_number,
+      entries_count
+    ) VALUES (?, ?, ?, ?)
+    ON CONFLICT(group_id) DO UPDATE SET
+      first_line_number = MIN(log_groups.first_line_number, excluded.first_line_number),
+      last_line_number = MAX(log_groups.last_line_number, excluded.last_line_number),
+      entries_count = log_groups.entries_count + excluded.entries_count
+  `);
 
   try {
     if (mode === 'rebuild') {
+      dropLogLineIndexes(db);
       clearExistingIndexData(db);
+      resetFtsTable(db, supportsFts);
       saveIndexState(db, {
         logFilePath: path.resolve(job.logFilePath),
         fileSize: statsSnapshot.size,
@@ -525,7 +731,7 @@ const runIndexJob = async (job, dbPath, statsSnapshot, mode, baselineState) => {
         }
 
         if (batch.length >= INDEX_BATCH_SIZE) {
-          flushBatch(db, batch, insertLineStatement, insertFtsStatement);
+          flushBatch(db, batch, insertLineStatement, insertFtsStatement, upsertGroupStatement);
         }
 
         if (indexedLineCount % INDEX_YIELD_EVERY_N_LINES === 0) {
@@ -549,7 +755,7 @@ const runIndexJob = async (job, dbPath, statsSnapshot, mode, baselineState) => {
         }
       }
 
-      flushBatch(db, batch, insertLineStatement, insertFtsStatement);
+      flushBatch(db, batch, insertLineStatement, insertFtsStatement, upsertGroupStatement);
     } finally {
       lineReader.close();
       stream.destroy();
@@ -568,6 +774,11 @@ const runIndexJob = async (job, dbPath, statsSnapshot, mode, baselineState) => {
         indexedLines: indexedLineCount
       }));
       return;
+    }
+
+    if (shouldOptimizeRebuild) {
+      backfillFtsTableFromLogLines(db, supportsFts);
+      ensureLogLineIndexes(db);
     }
 
     saveIndexState(db, {
@@ -628,6 +839,8 @@ const runIndexJob = async (job, dbPath, statsSnapshot, mode, baselineState) => {
 export const setLogIndexStorageDirectory = (directoryPath) => {
   indexStorageDirectory = directoryPath;
 };
+
+export const getLogIndexStorageDirectory = () => indexStorageDirectory;
 
 export const setLogIndexStatusCallback = (callback) => {
   onLogIndexStatusCallback = callback;
@@ -785,6 +998,38 @@ export const startLogIndexing = async (
   };
 };
 
+export const getIndexedLogViewState = async (logFilePath) => {
+  const dbPath = await getIndexDatabasePath(logFilePath);
+  const database = await openDatabase(dbPath);
+  if (!database) {
+    return {
+      success: false,
+      reason: 'sqlite_unavailable'
+    };
+  }
+
+  const { db } = database;
+  try {
+    const stats = await fs.promises.stat(logFilePath);
+    const persistedState = getPersistedIndexState(db);
+
+    if (!canReadPersistedIndex(db, persistedState, logFilePath)) {
+      return {
+        success: false,
+        reason: 'not_ready'
+      };
+    }
+
+    return {
+      success: true,
+      dbPath,
+      ...buildIndexedCoverageState(persistedState, stats)
+    };
+  } finally {
+    db.close();
+  }
+};
+
 const buildFtsQuery = (query) => {
   const tokens = query
     .trim()
@@ -815,16 +1060,38 @@ const normalizeLikeQueryTokens = (query) => (
 
 const escapeLikePattern = (token) => token.replace(/[\\%_]/g, '\\$&');
 
-const buildIndexedResults = (matchedRows, totalMatchedLines, indexedLineCount, maxGroups, maxLinesPerGroup) => {
+const buildIndexedResults = (
+  groupRows,
+  {
+    matchedGroups,
+    matchedLines,
+    indexedLineCount,
+    maxGroups,
+    truncated = false
+  }
+) => {
   const resultsByGroup = new Map();
-  let truncated = totalMatchedLines > matchedRows.length;
+  const matchedGroupsById = new Map(
+    matchedGroups.map(group => [
+      group.groupId,
+      {
+        firstLineNumber: group.firstMatchedLineNumber,
+        lastLineNumber: group.lastMatchedLineNumber,
+        matchedLineCount: group.matchedLineCount
+      }
+    ])
+  );
 
-  matchedRows.forEach((row) => {
+  groupRows.forEach((row) => {
+    const matchedGroup = matchedGroupsById.get(row.groupId);
+    if (!matchedGroup) {
+      return;
+    }
+
     let group = resultsByGroup.get(row.groupId);
 
     if (!group) {
       if (resultsByGroup.size >= maxGroups) {
-        truncated = true;
         return;
       }
 
@@ -836,13 +1103,16 @@ const buildIndexedResults = (matchedRows, totalMatchedLines, indexedLineCount, m
         metadata: row.metadataJson ? JSON.parse(row.metadataJson) : {},
         title: row.title || 'Search Match',
         entriesCount: 0,
-        firstSeen: new Date(0).toISOString(),
-        lastSeen: new Date(0).toISOString(),
+        firstSeen: DISK_SEARCH_TIMESTAMP,
+        lastSeen: DISK_SEARCH_TIMESTAMP,
         entries: [],
         searchMeta: {
           isDiskSearchResult: true,
-          firstLineNumber: row.lineNumber,
-          lastLineNumber: row.lineNumber,
+          firstLineNumber: matchedGroup.firstLineNumber,
+          lastLineNumber: matchedGroup.lastLineNumber,
+          groupFirstLineNumber: row.lineNumber,
+          groupLastLineNumber: row.lineNumber,
+          matchedLineCount: matchedGroup.matchedLineCount,
           hasHiddenMatches: false
         }
       };
@@ -851,23 +1121,25 @@ const buildIndexedResults = (matchedRows, totalMatchedLines, indexedLineCount, m
     }
 
     group.entriesCount += 1;
-    group.searchMeta.firstLineNumber = Math.min(group.searchMeta.firstLineNumber, row.lineNumber);
-    group.searchMeta.lastLineNumber = Math.max(group.searchMeta.lastLineNumber, row.lineNumber);
-
-    if (group.entries.length < maxLinesPerGroup) {
-      group.entries.push({
-        content: row.content,
-        timestamp: new Date(0).toISOString(),
-        lineNumber: row.lineNumber
-      });
-    } else {
-      group.searchMeta.hasHiddenMatches = true;
-      truncated = true;
+    if (row.success !== null && row.success !== undefined && group.success === null) {
+      group.success = Boolean(row.success);
     }
+    if (row.metadataJson) {
+      group.metadata = {
+        ...group.metadata,
+        ...JSON.parse(row.metadataJson)
+      };
+    }
+    group.searchMeta.groupFirstLineNumber = Math.min(group.searchMeta.groupFirstLineNumber, row.lineNumber);
+    group.searchMeta.groupLastLineNumber = Math.max(group.searchMeta.groupLastLineNumber, row.lineNumber);
+    group.entries.push({
+      content: row.content,
+      timestamp: DISK_SEARCH_TIMESTAMP,
+      lineNumber: row.lineNumber
+    });
   });
 
   const shownGroups = resultsByGroup.size;
-  const shownLines = Array.from(resultsByGroup.values()).reduce((sum, group) => sum + group.entriesCount, 0);
 
   return {
     backend: 'sqlite',
@@ -876,49 +1148,166 @@ const buildIndexedResults = (matchedRows, totalMatchedLines, indexedLineCount, m
       entries: Array.from(resultsByGroup.values())
     },
     summary: {
-      matchedLines: totalMatchedLines,
+      matchedLines,
       shownGroups,
       scannedLines: indexedLineCount,
-      truncated: truncated || totalMatchedLines > shownLines
+      truncated
     }
   };
 };
 
-const searchIndexedWithFts = (db, ftsQuery, persistedState, maxGroups, maxLinesPerGroup) => {
-  const totalMatchedLines = db.prepare(`
-    SELECT COUNT(*) AS count
-    FROM log_lines_fts
-    WHERE log_lines_fts MATCH ?
-  `).get(ftsQuery).count;
+const fetchIndexedGroupRows = (db, groupIds) => {
+  if (groupIds.length === 0) {
+    return [];
+  }
 
-  const matchedRows = db.prepare(`
+  const placeholders = groupIds.map(() => '?').join(', ');
+  return db.prepare(`
     SELECT
-      lines.line_number AS lineNumber,
+      line_number AS lineNumber,
+      group_id AS groupId,
+      type,
+      sub_type AS subType,
+      success,
+      title,
+      content,
+      metadata_json AS metadataJson
+    FROM log_lines
+    WHERE group_id IN (${placeholders})
+    ORDER BY line_number ASC
+  `).all(...groupIds);
+};
+
+const fetchIndexedViewGroupPage = (db, { beforeLineNumber = null, limit }) => {
+  const parameters = [];
+  const paginationClause = Number.isInteger(beforeLineNumber)
+    ? 'WHERE grouped.lastLineNumber < ?'
+    : '';
+
+  if (Number.isInteger(beforeLineNumber)) {
+    parameters.push(beforeLineNumber);
+  }
+
+  parameters.push(limit + 1);
+
+  return db.prepare(`
+    SELECT
+      group_id AS groupId,
+      first_line_number AS firstLineNumber,
+      last_line_number AS lastLineNumber,
+      entries_count AS entriesCount
+    FROM log_groups
+    ${Number.isInteger(beforeLineNumber) ? 'WHERE last_line_number < ?' : ''}
+    ORDER BY last_line_number DESC
+    LIMIT ?
+  `).all(...parameters);
+};
+
+const buildIndexedViewGroups = (groupRows, groupPage) => {
+  const groupsById = new Map();
+  const groupMetaById = new Map(
+    groupPage.map((group) => [
+      group.groupId,
+      {
+        firstLineNumber: group.firstLineNumber,
+        lastLineNumber: group.lastLineNumber,
+        entriesCount: group.entriesCount
+      }
+    ])
+  );
+
+  groupRows.forEach((row) => {
+    const groupMeta = groupMetaById.get(row.groupId);
+    if (!groupMeta) {
+      return;
+    }
+
+    let group = groupsById.get(row.groupId);
+    if (!group) {
+      group = {
+        uuid: row.groupId,
+        type: row.type || 'unknown',
+        subType: row.subType || 'unknown',
+        success: row.success === null || row.success === undefined ? null : Boolean(row.success),
+        metadata: row.metadataJson ? JSON.parse(row.metadataJson) : {},
+        title: row.title || 'Log Entry',
+        entriesCount: 0,
+        firstSeen: DISK_SEARCH_TIMESTAMP,
+        lastSeen: DISK_SEARCH_TIMESTAMP,
+        entries: [],
+        indexMeta: {
+          isIndexedViewResult: true,
+          firstLineNumber: groupMeta.firstLineNumber,
+          lastLineNumber: groupMeta.lastLineNumber
+        }
+      };
+
+      groupsById.set(row.groupId, group);
+    }
+
+    group.entriesCount += 1;
+    if (row.success !== null && row.success !== undefined && group.success === null) {
+      group.success = Boolean(row.success);
+    }
+
+    if (row.metadataJson) {
+      group.metadata = {
+        ...group.metadata,
+        ...JSON.parse(row.metadataJson)
+      };
+    }
+
+    group.entries.push({
+      content: row.content,
+      timestamp: DISK_SEARCH_TIMESTAMP,
+      lineNumber: row.lineNumber
+    });
+  });
+
+  return groupPage
+    .map((group) => groupsById.get(group.groupId))
+    .filter(Boolean);
+};
+
+const searchIndexedWithFts = (db, ftsQuery, persistedState, maxGroups) => {
+  const matchedGroups = db.prepare(`
+    SELECT
       lines.group_id AS groupId,
-      lines.type,
-      lines.sub_type AS subType,
-      lines.success,
-      lines.title,
-      lines.content,
-      lines.metadata_json AS metadataJson
+      MIN(lines.line_number) AS firstMatchedLineNumber,
+      MAX(lines.line_number) AS lastMatchedLineNumber,
+      COUNT(*) AS matchedLineCount
     FROM log_lines_fts AS fts
     INNER JOIN log_lines AS lines
       ON lines.id = fts.rowid
     WHERE log_lines_fts MATCH ?
-    ORDER BY lines.line_number ASC
+    GROUP BY lines.group_id
+    ORDER BY firstMatchedLineNumber ASC
     LIMIT ?
-  `).all(ftsQuery, maxGroups * maxLinesPerGroup);
+  `).all(ftsQuery, maxGroups + 1);
 
-  return buildIndexedResults(
-    matchedRows,
-    totalMatchedLines,
-    persistedState.indexedLineCount,
-    maxGroups,
-    maxLinesPerGroup
+  const truncated = matchedGroups.length > maxGroups;
+  const visibleGroups = truncated ? matchedGroups.slice(0, maxGroups) : matchedGroups;
+  const groupRows = fetchIndexedGroupRows(
+    db,
+    visibleGroups.map(group => group.groupId)
   );
+
+  return {
+    success: true,
+    ...buildIndexedResults(
+      groupRows,
+      {
+        matchedGroups: visibleGroups,
+        matchedLines: visibleGroups.reduce((sum, group) => sum + group.matchedLineCount, 0),
+        indexedLineCount: persistedState.indexedLineCount,
+        maxGroups,
+        truncated
+      }
+    )
+  };
 };
 
-const searchIndexedWithLike = (db, query, persistedState, maxGroups, maxLinesPerGroup) => {
+const searchIndexedWithLike = (db, query, persistedState, maxGroups) => {
   const tokens = normalizeLikeQueryTokens(query);
   if (tokens.length === 0) {
     return {
@@ -940,41 +1329,42 @@ const searchIndexedWithLike = (db, query, persistedState, maxGroups, maxLinesPer
   const conditions = tokens.map(() => `${searchableExpression} LIKE ? ESCAPE '\\'`).join(' AND ');
   const parameters = tokens.map(token => `%${escapeLikePattern(token)}%`);
 
-  const totalMatchedLines = db.prepare(`
-    SELECT COUNT(*) AS count
-    FROM log_lines
-    WHERE ${conditions}
-  `).get(...parameters).count;
-
-  const matchedRows = db.prepare(`
+  const matchedGroups = db.prepare(`
     SELECT
-      line_number AS lineNumber,
       group_id AS groupId,
-      type,
-      sub_type AS subType,
-      success,
-      title,
-      content,
-      metadata_json AS metadataJson
+      MIN(line_number) AS firstMatchedLineNumber,
+      MAX(line_number) AS lastMatchedLineNumber,
+      COUNT(*) AS matchedLineCount
     FROM log_lines
     WHERE ${conditions}
-    ORDER BY line_number ASC
+    GROUP BY group_id
+    ORDER BY firstMatchedLineNumber ASC
     LIMIT ?
-  `).all(...parameters, maxGroups * maxLinesPerGroup);
+  `).all(...parameters, maxGroups + 1);
+
+  const truncated = matchedGroups.length > maxGroups;
+  const visibleGroups = truncated ? matchedGroups.slice(0, maxGroups) : matchedGroups;
+  const groupRows = fetchIndexedGroupRows(
+    db,
+    visibleGroups.map(group => group.groupId)
+  );
 
   return {
     success: true,
     ...buildIndexedResults(
-      matchedRows,
-      totalMatchedLines,
-      persistedState.indexedLineCount,
-      maxGroups,
-      maxLinesPerGroup
+      groupRows,
+      {
+        matchedGroups: visibleGroups,
+        matchedLines: visibleGroups.reduce((sum, group) => sum + group.matchedLineCount, 0),
+        indexedLineCount: persistedState.indexedLineCount,
+        maxGroups,
+        truncated
+      }
     )
   };
 };
 
-export const searchIndexedLogFile = async (logFilePath, query, { maxGroups = 300, maxLinesPerGroup = 200 } = {}) => {
+export const searchIndexedLogFile = async (logFilePath, query, { maxGroups = 300 } = {}) => {
   const ftsQuery = buildFtsQuery(query);
   if (!ftsQuery && normalizeLikeQueryTokens(query).length === 0) {
     return {
@@ -1003,21 +1393,98 @@ export const searchIndexedLogFile = async (logFilePath, query, { maxGroups = 300
       };
     }
 
-    if (persistedState.logFilePath !== path.resolve(logFilePath) || persistedState.indexedBytes !== stats.size) {
+    if (persistedState.logFilePath !== path.resolve(logFilePath)) {
       return {
         success: false,
         reason: 'stale'
       };
     }
 
+    const coverageBytes = Math.min(persistedState.indexedBytes || 0, stats.size);
+    const coverageComplete = (
+      persistedState.fileSize === stats.size &&
+      persistedState.indexedBytes === stats.size &&
+      persistedState.fileMtimeMs === stats.mtimeMs
+    );
+    const needsRefresh = !coverageComplete;
+
+    let searchResult;
     if (supportsFts && ftsQuery && isFtsIndexUsable(db)) {
+      searchResult = searchIndexedWithFts(db, ftsQuery, persistedState, maxGroups);
+    } else {
+      searchResult = searchIndexedWithLike(db, query, persistedState, maxGroups);
+    }
+
+    if (!searchResult.success) {
+      return searchResult;
+    }
+
+    return {
+      success: true,
+      coveredBytes: coverageBytes,
+      coverageComplete,
+      needsRefresh,
+      ...searchResult
+    };
+  } finally {
+    db.close();
+  }
+};
+
+export const getIndexedLogViewPage = async (
+  logFilePath,
+  {
+    beforeLineNumber = null,
+    limit = 20
+  } = {}
+) => {
+  const normalizedLimit = Math.max(1, Math.min(100, Number(limit) || 20));
+  const normalizedCursor = Number.isInteger(beforeLineNumber) ? beforeLineNumber : null;
+  const dbPath = await getIndexDatabasePath(logFilePath);
+  const database = await openDatabase(dbPath);
+  if (!database) {
+    return {
+      success: false,
+      reason: 'sqlite_unavailable'
+    };
+  }
+
+  const { db } = database;
+  try {
+    const stats = await fs.promises.stat(logFilePath);
+    const persistedState = getPersistedIndexState(db);
+
+    if (!canReadPersistedIndex(db, persistedState, logFilePath)) {
       return {
-        success: true,
-        ...searchIndexedWithFts(db, ftsQuery, persistedState, maxGroups, maxLinesPerGroup)
+        success: false,
+        reason: 'not_ready'
       };
     }
 
-    return searchIndexedWithLike(db, query, persistedState, maxGroups, maxLinesPerGroup);
+    const groupPage = fetchIndexedViewGroupPage(db, {
+      beforeLineNumber: normalizedCursor,
+      limit: normalizedLimit
+    });
+    const hasMore = groupPage.length > normalizedLimit;
+    const visibleGroups = hasMore ? groupPage.slice(0, normalizedLimit) : groupPage;
+    const groupRows = fetchIndexedGroupRows(
+      db,
+      visibleGroups.map((group) => group.groupId)
+    );
+
+    return {
+      success: true,
+      dbPath,
+      page: {
+        totalEntries: visibleGroups.length,
+        entries: buildIndexedViewGroups(groupRows, visibleGroups),
+        hasMore,
+        nextCursor: hasMore && visibleGroups.length > 0
+          ? visibleGroups[visibleGroups.length - 1].lastLineNumber
+          : null
+      },
+      ...buildIndexedCoverageState(persistedState, stats)
+    };
   } finally {
     db.close();
   }

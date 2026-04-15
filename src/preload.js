@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getProjectInfo: () => ipcRenderer.invoke('get-project-info'),
   getProjectLogFiles: () => ipcRenderer.invoke('get-project-log-files'),
   getLogIndexStatus: () => ipcRenderer.invoke('get-log-index-status'),
+  getLogViewPage: (options) => ipcRenderer.invoke('get-log-view-page', options),
   startLogSearch: (query) => ipcRenderer.invoke('start-log-search', query),
   cancelLogSearch: () => ipcRenderer.invoke('cancel-log-search'),
   onProjectSelected: (callback) => {

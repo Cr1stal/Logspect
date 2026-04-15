@@ -83,9 +83,10 @@ export const stopWatching = () => {
 /**
  * Starts watching a log file for changes
  * @param {string} newLogPath - Path to the log file to watch
+ * @param {{startOffset?: number|null, loadExistingContent?: boolean|null, startOffsetAtLineBoundary?: boolean}} options
  * @returns {Promise<{success: boolean, message?: string}>}
  */
-export const startWatching = async (newLogPath) => {
+export const startWatching = async (newLogPath, options = {}) => {
   try {
     stopWatching();
 
@@ -94,18 +95,27 @@ export const startWatching = async (newLogPath) => {
     dropPartialLeadingLine = false;
 
     let shouldLoadExistingContent = false;
+    const hasCustomStartOffset = Number.isInteger(options.startOffset) && options.startOffset >= 0;
 
     // Check if file exists and get initial size
     try {
       const stats = await fs.promises.stat(logFilePath);
-      lastSize = getInitialReadOffset(stats.size);
-      dropPartialLeadingLine = lastSize > 0;
-      shouldLoadExistingContent = stats.size > lastSize;
+      lastSize = hasCustomStartOffset
+        ? Math.min(options.startOffset, stats.size)
+        : getInitialReadOffset(stats.size);
+      dropPartialLeadingLine = hasCustomStartOffset
+        ? !options.startOffsetAtLineBoundary
+        : lastSize > 0;
+      shouldLoadExistingContent = typeof options.loadExistingContent === 'boolean'
+        ? options.loadExistingContent && stats.size > lastSize
+        : stats.size > lastSize;
 
       log.info(`Started watching log file: ${logFilePath}`);
       log.info(`Initial file size: ${stats.size} bytes`);
 
-      if (dropPartialLeadingLine) {
+      if (hasCustomStartOffset) {
+        log.info(`Starting watcher from byte offset ${lastSize}`);
+      } else if (dropPartialLeadingLine) {
         log.info(`Loading the most recent ${INITIAL_HISTORY_MAX_BYTES} bytes to keep large files responsive`);
       }
     } catch (err) {

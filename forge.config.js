@@ -66,6 +66,11 @@ module.exports = {
             target: 'main',
           },
           {
+            config: 'vite.main.config.mjs',
+            entry: 'src/modules/logSearchWorker.js',
+            target: 'main',
+          },
+          {
             config: 'vite.preload.config.mjs',
             entry: 'src/preload.js',
             target: 'preload',

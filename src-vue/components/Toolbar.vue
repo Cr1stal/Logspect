@@ -62,8 +62,16 @@
             placeholder="Search whole file"
             :value="searchTerm"
             @input="$emit('update-search', $event.target.value)"
+            @keydown.enter.prevent="$emit('submit-search')"
           >
         </div>
+        <button
+          class="search-submit-btn"
+          :disabled="!searchTerm.trim()"
+          @click="$emit('submit-search')"
+        >
+          Search
+        </button>
       </div>
 
       <!-- Invert Toggle -->
@@ -240,7 +248,7 @@ export default {
       }
     }
   },
-  emits: ['select-project', 'select-log-file', 'browse-log-file', 'refresh-log-files', 'refresh', 'clear', 'toggle-auto-scroll', 'toggle-watching', 'update-search', 'toggle-invert', 'toggle-category']
+  emits: ['select-project', 'select-log-file', 'browse-log-file', 'refresh-log-files', 'refresh', 'clear', 'toggle-auto-scroll', 'toggle-watching', 'update-search', 'submit-search', 'toggle-invert', 'toggle-category']
 }
 </script>
 
@@ -292,7 +300,7 @@ export default {
 }
 
 .search-container {
-  @apply relative;
+  @apply relative flex items-center gap-2;
 }
 
 .search-input-wrapper {
@@ -305,6 +313,10 @@ export default {
 
 .search-input {
   @apply w-48 bg-slate-600 border border-slate-500 text-slate-300 pl-9 pr-3 py-1.5 rounded text-xs font-mono focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 placeholder-slate-400;
+}
+
+.search-submit-btn {
+  @apply bg-slate-600 border border-slate-500 text-slate-200 px-3 py-1.5 rounded text-xs transition-all duration-200 hover:bg-slate-500 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-slate-600;
 }
 
 .invert-container {

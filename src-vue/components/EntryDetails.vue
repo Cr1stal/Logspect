@@ -63,7 +63,10 @@ export default {
     },
     sortedEntries() {
       if (!this.selectedEntry || !this.selectedEntry.entries) return [];
-      if (this.selectedEntry.searchMeta?.isDiskSearchResult) {
+      const hasLineNumbers = this.selectedEntry.entries.length > 0 &&
+        this.selectedEntry.entries.every(entry => typeof entry.lineNumber === 'number')
+
+      if ((this.selectedEntry.searchMeta?.isDiskSearchResult || this.selectedEntry.indexMeta?.isIndexedViewResult) && hasLineNumbers) {
         return [...this.selectedEntry.entries].sort((a, b) => (a.lineNumber || 0) - (b.lineNumber || 0));
       }
 

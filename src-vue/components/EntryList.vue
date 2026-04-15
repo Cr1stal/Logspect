@@ -4,7 +4,11 @@
       {{ listLabel }} ({{ displayedEntries.length }})
     </div>
 
-    <div class="entries-list">
+    <div
+      ref="entriesList"
+      class="entries-list"
+      @scroll="handleScroll"
+    >
       <div v-if="displayedEntries.length === 0" class="empty-state">
         <div class="empty-icon">
           <FileText :size="48" class="opacity-50" />
@@ -41,6 +45,10 @@
             </span>
           </div>
         </div>
+      </div>
+
+      <div v-if="isLoadingMore" class="entries-loading">
+        Loading more entries...
       </div>
     </div>
   </div>
@@ -91,6 +99,14 @@ export default {
     listLabel: {
       type: String,
       default: 'Entries'
+    },
+    canLoadMore: {
+      type: Boolean,
+      default: false
+    },
+    isLoadingMore: {
+      type: Boolean,
+      default: false
     }
   },
   data() {
@@ -130,15 +146,7 @@ export default {
 
       // Apply sorting
       const sorted = [...filteredEntries].sort((a, b) => {
-        if (a.searchMeta?.isDiskSearchResult || b.searchMeta?.isDiskSearchResult) {
-          const lineA = a.searchMeta?.firstLineNumber || 0
-          const lineB = b.searchMeta?.firstLineNumber || 0
-          return this.invertOrder ? lineB - lineA : lineA - lineB
-        }
-
-        const dateA = new Date(a.firstSeen);
-        const dateB = new Date(b.firstSeen);
-        return this.invertOrder ? dateB - dateA : dateA - dateB;
+        return this.compareEntries(a, b)
       });
 
       return sorted;
@@ -178,6 +186,45 @@ export default {
     }
   },
   methods: {
+    getEntryLineMeta(entry) {
+      if (entry.searchMeta?.isDiskSearchResult) {
+        return {
+          firstLineNumber: entry.searchMeta.firstLineNumber,
+          lastLineNumber: entry.searchMeta.lastLineNumber
+        }
+      }
+
+      if (entry.indexMeta?.isIndexedViewResult) {
+        return {
+          firstLineNumber: entry.indexMeta.firstLineNumber,
+          lastLineNumber: entry.indexMeta.lastLineNumber
+        }
+      }
+
+      return null
+    },
+    compareEntries(a, b) {
+      const lineMetaA = this.getEntryLineMeta(a)
+      const lineMetaB = this.getEntryLineMeta(b)
+
+      if (lineMetaA && lineMetaB) {
+        return this.invertOrder
+          ? lineMetaB.lastLineNumber - lineMetaA.lastLineNumber
+          : lineMetaA.lastLineNumber - lineMetaB.lastLineNumber
+      }
+
+      if (lineMetaA || lineMetaB) {
+        if (this.invertOrder) {
+          return lineMetaA ? 1 : -1
+        }
+
+        return lineMetaA ? -1 : 1
+      }
+
+      const dateA = new Date(a.firstSeen);
+      const dateB = new Date(b.firstSeen);
+      return this.invertOrder ? dateB - dateA : dateA - dateB;
+    },
     initializeSearch() {
       // Initialize MiniSearch with configuration optimized for log data
       this.miniSearch = new MiniSearch({
@@ -268,21 +315,49 @@ export default {
       return new Date(timestamp).toLocaleTimeString();
     },
     formatEntryCount(entry) {
-      const label = entry.searchMeta?.isDiskSearchResult ? 'matches' : 'entries'
-      return `${entry.entriesCount} ${label}`
+      if (entry.searchMeta?.isDiskSearchResult) {
+        const matchedLineCount = entry.searchMeta.matchedLineCount ?? entry.entriesCount
+        if (matchedLineCount === entry.entriesCount) {
+          return `${matchedLineCount} matches`
+        }
+
+        return `${matchedLineCount} matches • ${entry.entriesCount} entries`
+      }
+
+      return `${entry.entriesCount} entries`
     },
     formatEntryPosition(entry) {
-      if (entry.searchMeta?.isDiskSearchResult) {
-        const { firstLineNumber, lastLineNumber } = entry.searchMeta
+      const lineMeta = this.getEntryLineMeta(entry)
+      if (lineMeta) {
+        const { firstLineNumber, lastLineNumber } = lineMeta
         return firstLineNumber === lastLineNumber
           ? `Line ${firstLineNumber}`
           : `Lines ${firstLineNumber}-${lastLineNumber}`
       }
 
       return this.formatTime(entry.lastSeen)
+    },
+    handleScroll() {
+      if (!this.canLoadMore || this.isLoadingMore) {
+        return
+      }
+
+      const entriesList = this.$refs.entriesList
+      if (!entriesList) {
+        return
+      }
+
+      const threshold = 96
+      const shouldLoadMore = this.invertOrder
+        ? entriesList.scrollTop + entriesList.clientHeight >= entriesList.scrollHeight - threshold
+        : entriesList.scrollTop <= threshold
+
+      if (shouldLoadMore) {
+        this.$emit('load-more')
+      }
     }
   },
-  emits: ['select-entry']
+  emits: ['select-entry', 'load-more']
 }
 </script>
 
@@ -299,6 +374,10 @@ export default {
 
 .entries-list {
   @apply flex-1 overflow-y-auto h-0;
+}
+
+.entries-loading {
+  @apply px-4 py-3 text-xs text-slate-400 border-t border-slate-700;
 }
 
 .entry-item {

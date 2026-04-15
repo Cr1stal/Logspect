@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 
-const SEARCH_DEBOUNCE_MS = 250
+const INDEXED_LOG_PAGE_SIZE = 20
 
 const createEmptySearchState = () => ({
   searchId: null,
@@ -33,6 +33,102 @@ const createEmptyIndexState = () => ({
   error: null
 })
 
+const createEmptyIndexedViewerState = () => ({
+  active: false,
+  loading: false,
+  hasMore: false,
+  nextCursor: null,
+  entries: [],
+  coveredBytes: 0,
+  totalBytes: 0
+})
+
+const getEntryLineMeta = (entry) => {
+  if (entry.searchMeta?.isDiskSearchResult) {
+    return {
+      firstLineNumber: entry.searchMeta.firstLineNumber,
+      lastLineNumber: entry.searchMeta.lastLineNumber
+    }
+  }
+
+  if (entry.indexMeta?.isIndexedViewResult) {
+    return {
+      firstLineNumber: entry.indexMeta.firstLineNumber,
+      lastLineNumber: entry.indexMeta.lastLineNumber
+    }
+  }
+
+  return null
+}
+
+const mergeEntryCollections = (leftEntries = [], rightEntries = []) => (
+  [...leftEntries, ...rightEntries]
+)
+
+const mergeLogGroups = (baseEntry, incomingEntry) => {
+  const mergedEntries = mergeEntryCollections(baseEntry.entries, incomingEntry.entries)
+
+  return {
+    ...baseEntry,
+    ...incomingEntry,
+    metadata: {
+      ...(baseEntry.metadata || {}),
+      ...(incomingEntry.metadata || {})
+    },
+    success: incomingEntry.success ?? baseEntry.success ?? null,
+    title: incomingEntry.title || baseEntry.title,
+    entries: mergedEntries,
+    entriesCount: mergedEntries.length,
+    firstSeen: baseEntry.firstSeen || incomingEntry.firstSeen,
+    lastSeen: incomingEntry.lastSeen || baseEntry.lastSeen,
+    searchMeta: incomingEntry.searchMeta || baseEntry.searchMeta,
+    indexMeta: incomingEntry.indexMeta || baseEntry.indexMeta
+  }
+}
+
+const mergeViewerEntries = (indexedEntries, liveEntries) => {
+  const mergedEntriesByUuid = new Map()
+
+  indexedEntries.forEach((entry) => {
+    mergedEntriesByUuid.set(entry.uuid, {
+      ...entry,
+      metadata: { ...(entry.metadata || {}) },
+      entries: [...(entry.entries || [])]
+    })
+  })
+
+  liveEntries.forEach((entry) => {
+    const existingEntry = mergedEntriesByUuid.get(entry.uuid)
+    if (!existingEntry) {
+      mergedEntriesByUuid.set(entry.uuid, {
+        ...entry,
+        metadata: { ...(entry.metadata || {}) },
+        entries: [...(entry.entries || [])]
+      })
+      return
+    }
+
+    mergedEntriesByUuid.set(entry.uuid, mergeLogGroups(existingEntry, {
+      ...entry,
+      metadata: { ...(entry.metadata || {}) },
+      entries: [...(entry.entries || [])]
+    }))
+  })
+
+  return Array.from(mergedEntriesByUuid.values())
+}
+
+const sortEntryItems = (entry) => {
+  const entries = [...(entry.entries || [])]
+  const hasLineNumbers = entries.length > 0 && entries.every(candidate => typeof candidate.lineNumber === 'number')
+
+  if (getEntryLineMeta(entry) && hasLineNumbers) {
+    return entries.sort((left, right) => (left.lineNumber || 0) - (right.lineNumber || 0))
+  }
+
+  return entries.sort((left, right) => new Date(left.timestamp) - new Date(right.timestamp))
+}
+
 export const useLogStore = defineStore('log', {
   state: () => ({
     // Project state
@@ -54,10 +150,11 @@ export const useLogStore = defineStore('log', {
     isRefreshing: false,
 
     // Search state
+    searchDraft: '',
     searchTerm: '',
-    searchDebounceTimer: null,
     diskSearch: createEmptySearchState(),
-    logIndex: createEmptyIndexState()
+    logIndex: createEmptyIndexState(),
+    indexedViewer: createEmptyIndexedViewerState()
   }),
 
   getters: {
@@ -66,8 +163,8 @@ export const useLogStore = defineStore('log', {
       return state.projectDirectory.split('/').pop() || 'Unknown Project'
     },
 
-    totalLogEntries: (state) => {
-      return state.logData.entries.reduce((sum, entry) => sum + entry.entriesCount, 0)
+    totalLogEntries() {
+      return this.viewerLogData.entries.reduce((sum, entry) => sum + entry.entriesCount, 0)
     },
 
     isDiskSearchVisible(state) {
@@ -82,8 +179,24 @@ export const useLogStore = defineStore('log', {
       return state.logIndex.status === 'indexing'
     },
 
+    viewerLogData(state) {
+      if (!state.indexedViewer.active) {
+        return state.logData
+      }
+
+      const entries = mergeViewerEntries(state.indexedViewer.entries, state.logData.entries)
+      return {
+        totalEntries: entries.length,
+        entries
+      }
+    },
+
+    canLoadMoreEntries: (state) => state.indexedViewer.active && state.indexedViewer.hasMore,
+
+    isLoadingMoreEntries: (state) => state.indexedViewer.loading,
+
     displayedLogData(state) {
-      return this.isDiskSearchVisible ? state.diskSearch.results : state.logData
+      return this.isDiskSearchVisible ? state.diskSearch.results : this.viewerLogData
     },
 
     displayedTotalLogEntries() {
@@ -93,16 +206,24 @@ export const useLogStore = defineStore('log', {
     selectedEntry(state) {
       if (!state.selectedUuid) return null
 
-      const entry = this.displayedLogData.entries.find(candidate => candidate.uuid === state.selectedUuid)
-      if (!entry) return null
+      const displayedEntry = this.displayedLogData.entries.find(candidate => candidate.uuid === state.selectedUuid)
+      if (!displayedEntry) return null
 
-      const sortedEntries = entry.searchMeta?.isDiskSearchResult
-        ? [...entry.entries].sort((left, right) => (left.lineNumber || 0) - (right.lineNumber || 0))
-        : [...entry.entries].sort((left, right) => new Date(left.timestamp) - new Date(right.timestamp))
+      const liveEntry = displayedEntry.searchMeta?.isDiskSearchResult
+        ? this.viewerLogData.entries.find(candidate => candidate.uuid === state.selectedUuid)
+        : null
+
+      const resolvedEntry = liveEntry && liveEntry.entriesCount > displayedEntry.entriesCount
+        ? {
+            ...displayedEntry,
+            ...liveEntry,
+            searchMeta: displayedEntry.searchMeta
+          }
+        : displayedEntry
 
       return {
-        ...entry,
-        entries: sortedEntries
+        ...resolvedEntry,
+        entries: sortEntryItems(resolvedEntry)
       }
     },
 
@@ -155,23 +276,12 @@ export const useLogStore = defineStore('log', {
   },
 
   actions: {
-    clearPendingSearchTimer() {
-      if (this.searchDebounceTimer) {
-        clearTimeout(this.searchDebounceTimer)
-        this.searchDebounceTimer = null
-      }
+    resetDiskSearchState() {
+      this.diskSearch = createEmptySearchState()
     },
 
-    resetDiskSearchState({ preserveSearchTerm = true } = {}) {
-      const nextSearchTerm = preserveSearchTerm ? this.searchTerm : ''
-
-      this.clearPendingSearchTimer()
-      this.diskSearch = createEmptySearchState()
-      this.diskSearch.query = nextSearchTerm.trim()
-
-      if (!preserveSearchTerm) {
-        this.searchTerm = ''
-      }
+    resetIndexedViewerState() {
+      this.indexedViewer = createEmptyIndexedViewerState()
     },
 
     resetViewerState() {
@@ -180,8 +290,11 @@ export const useLogStore = defineStore('log', {
         entries: []
       }
       this.selectedUuid = null
-      this.resetDiskSearchState({ preserveSearchTerm: false })
+      this.searchDraft = ''
+      this.searchTerm = ''
+      this.resetDiskSearchState()
       this.logIndex = createEmptyIndexState()
+      this.resetIndexedViewerState()
     },
 
     applyProjectSelection(result) {
@@ -210,7 +323,7 @@ export const useLogStore = defineStore('log', {
         this.isWatching = projectInfo.isWatching
 
         if (this.hasProject) {
-          await this.refreshLogs()
+          await this.loadInitialEntries()
           await this.refreshLogIndexStatus()
         }
       } catch (error) {
@@ -223,7 +336,7 @@ export const useLogStore = defineStore('log', {
         const result = await window.electronAPI.selectDirectory()
         if (result.success) {
           this.applyProjectSelection(result)
-          await this.refreshLogs()
+          await this.loadInitialEntries()
           return result.projectDir
         }
 
@@ -240,7 +353,7 @@ export const useLogStore = defineStore('log', {
         const result = await window.electronAPI.selectRecentProject(projectPath)
         if (result.success) {
           this.applyProjectSelection(result)
-          await this.refreshLogs()
+          await this.loadInitialEntries()
           return true
         }
 
@@ -279,7 +392,7 @@ export const useLogStore = defineStore('log', {
         const result = await window.electronAPI.selectProjectLogFile(logFilePath)
         if (result.success) {
           this.applyProjectSelection(result)
-          await this.refreshLogs()
+          await this.loadInitialEntries()
           return true
         }
 
@@ -296,7 +409,7 @@ export const useLogStore = defineStore('log', {
         const result = await window.electronAPI.browseProjectLogFile()
         if (result.success) {
           this.applyProjectSelection(result)
-          await this.refreshLogs()
+          await this.loadInitialEntries()
           return true
         }
 
@@ -316,6 +429,37 @@ export const useLogStore = defineStore('log', {
       this.logData = data
     },
 
+    async loadInitialEntries() {
+      if (!window.electronAPI || !this.hasProject) {
+        return
+      }
+
+      this.resetIndexedViewerState()
+
+      try {
+        const result = await window.electronAPI.getLogViewPage({
+          limit: INDEXED_LOG_PAGE_SIZE
+        })
+
+        if (result.success && result.mode === 'indexed') {
+          this.indexedViewer = {
+            active: true,
+            loading: false,
+            hasMore: result.page?.hasMore ?? false,
+            nextCursor: result.page?.nextCursor ?? null,
+            entries: result.page?.entries || [],
+            coveredBytes: result.coveredBytes || 0,
+            totalBytes: result.totalBytes || 0
+          }
+          return
+        }
+      } catch (error) {
+        console.error('Error loading indexed log page:', error)
+      }
+
+      await this.refreshLogs()
+    },
+
     async refreshLogs() {
       this.isRefreshing = true
       try {
@@ -327,6 +471,56 @@ export const useLogStore = defineStore('log', {
         setTimeout(() => {
           this.isRefreshing = false
         }, 1000)
+      }
+    },
+
+    async loadMoreEntries() {
+      if (!window.electronAPI || !this.indexedViewer.active || !this.indexedViewer.hasMore || this.indexedViewer.loading) {
+        return
+      }
+
+      this.indexedViewer = {
+        ...this.indexedViewer,
+        loading: true
+      }
+
+      try {
+        const result = await window.electronAPI.getLogViewPage({
+          limit: INDEXED_LOG_PAGE_SIZE,
+          beforeLineNumber: this.indexedViewer.nextCursor
+        })
+
+        if (!result.success || result.mode !== 'indexed') {
+          this.indexedViewer = {
+            ...this.indexedViewer,
+            loading: false
+          }
+          return
+        }
+
+        const appendedEntries = [
+          ...this.indexedViewer.entries,
+          ...(result.page?.entries || [])
+        ]
+        const uniqueEntries = Array.from(
+          new Map(appendedEntries.map(entry => [entry.uuid, entry])).values()
+        )
+
+        this.indexedViewer = {
+          active: true,
+          loading: false,
+          hasMore: result.page?.hasMore ?? false,
+          nextCursor: result.page?.nextCursor ?? null,
+          entries: uniqueEntries,
+          coveredBytes: result.coveredBytes || this.indexedViewer.coveredBytes,
+          totalBytes: result.totalBytes || this.indexedViewer.totalBytes
+        }
+      } catch (error) {
+        console.error('Error loading additional indexed entries:', error)
+        this.indexedViewer = {
+          ...this.indexedViewer,
+          loading: false
+        }
       }
     },
 
@@ -495,31 +689,61 @@ export const useLogStore = defineStore('log', {
       }
     },
 
-    updateSearchTerm(term) {
-      this.searchTerm = term
-      this.clearPendingSearchTimer()
+    async updateSearchDraft(term) {
+      this.searchDraft = term
 
-      const trimmedTerm = term.trim()
-      if (!trimmedTerm) {
-        void this.clearSearch()
+      const trimmedDraft = term.trim()
+      if (!trimmedDraft) {
+        await this.clearSearch()
         return
       }
 
+      if (this.searchTerm && trimmedDraft !== this.searchTerm.trim()) {
+        try {
+          if (window.electronAPI && this.isDiskSearchRunning) {
+            await window.electronAPI.cancelLogSearch()
+          }
+        } catch (error) {
+          console.error('Error cancelling stale disk search:', error)
+        } finally {
+          this.selectedUuid = null
+          this.searchTerm = ''
+          this.resetDiskSearchState()
+        }
+      }
+    },
+
+    async submitSearch() {
+      if (!window.electronAPI || !this.hasProject) {
+        return
+      }
+
+      const trimmedQuery = this.searchDraft.trim()
+      if (!trimmedQuery) {
+        await this.clearSearch()
+        return
+      }
+
+      try {
+        if (this.isDiskSearchRunning) {
+          await window.electronAPI.cancelLogSearch()
+        }
+      } catch (error) {
+        console.error('Error stopping previous disk search:', error)
+      }
+
       this.selectedUuid = null
+      this.searchTerm = trimmedQuery
       this.diskSearch = {
         ...createEmptySearchState(),
-        query: trimmedTerm,
+        query: trimmedQuery,
         status: 'pending'
       }
 
-      this.searchDebounceTimer = setTimeout(() => {
-        void this.startDiskSearch(trimmedTerm)
-      }, SEARCH_DEBOUNCE_MS)
+      await this.startDiskSearch(trimmedQuery)
     },
 
     async stopSearch() {
-      this.clearPendingSearchTimer()
-
       try {
         if (window.electronAPI) {
           await window.electronAPI.cancelLogSearch()
@@ -537,8 +761,6 @@ export const useLogStore = defineStore('log', {
     },
 
     async clearSearch() {
-      this.clearPendingSearchTimer()
-
       try {
         if (window.electronAPI) {
           await window.electronAPI.cancelLogSearch()
@@ -547,8 +769,9 @@ export const useLogStore = defineStore('log', {
         console.error('Error clearing disk search:', error)
       } finally {
         this.selectedUuid = null
+        this.searchDraft = ''
         this.searchTerm = ''
-        this.resetDiskSearchState({ preserveSearchTerm: false })
+        this.resetDiskSearchState()
       }
     },
 

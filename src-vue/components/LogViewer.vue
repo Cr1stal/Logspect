@@ -8,11 +8,11 @@
       :selectedLogFilePath="logStore.selectedLogFilePath"
       :availableLogFiles="logStore.availableLogFiles"
       :isWatching="logStore.isWatching"
-      :totalRequests="logStore.logData.totalEntries"
+      :totalRequests="logStore.viewerLogData.totalEntries"
       :totalEntries="logStore.totalLogEntries"
       :autoScroll="logStore.autoScroll"
       :isRefreshing="logStore.isRefreshing"
-      :searchTerm="logStore.searchTerm"
+      :searchTerm="logStore.searchDraft"
       :invertOrder="invertOrder"
       :activeCategories="activeCategories"
       @select-project="logStore.selectProject"
@@ -24,6 +24,7 @@
       @toggle-auto-scroll="logStore.toggleAutoScroll"
       @toggle-watching="logStore.toggleWatching"
       @update-search="updateSearch"
+      @submit-search="logStore.submitSearch"
       @toggle-invert="toggleInvert"
       @toggle-category="toggleCategory"
     />
@@ -58,7 +59,10 @@
           :searchMode="logStore.isDiskSearchVisible ? 'disk' : 'local'"
           :emptyMessage="entryListEmptyMessage"
           :listLabel="logStore.isDiskSearchVisible ? 'Matches' : 'Entries'"
+          :canLoadMore="logStore.canLoadMoreEntries"
+          :isLoadingMore="logStore.isLoadingMoreEntries"
           @select-entry="logStore.selectEntry"
+          @load-more="logStore.loadMoreEntries"
         />
 
         <EntryDetails
@@ -71,7 +75,7 @@
 
     <!-- Footer -->
     <Footer
-      :totalRequests="logStore.logData.totalEntries"
+      :totalRequests="logStore.viewerLogData.totalEntries"
       :totalEntries="logStore.totalLogEntries"
       :indexStatus="logStore.logIndex"
     />
@@ -127,7 +131,7 @@ export default {
   },
   methods: {
     updateSearch(term) {
-      this.logStore.updateSearchTerm(term)
+      void this.logStore.updateSearchDraft(term)
     },
     toggleInvert(invert) {
       this.invertOrder = invert;
