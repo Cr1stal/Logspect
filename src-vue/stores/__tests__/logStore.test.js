@@ -75,7 +75,8 @@ describe('logStore selectedEntry', () => {
     setActivePinia(createPinia())
     globalThis.window = {
       electronAPI: {
-        cancelLogSearch: vi.fn().mockResolvedValue({ success: true })
+        cancelLogSearch: vi.fn().mockResolvedValue({ success: true }),
+        rebuildLogIndex: vi.fn().mockResolvedValue({ success: true })
       }
     }
   })
@@ -358,5 +359,43 @@ describe('logStore selectedEntry', () => {
     expect(store.searchDraft).toBe('callback timeout')
     expect(store.searchTerm).toBe('')
     expect(store.diskSearch.status).toBe('idle')
+  })
+
+  it('rebuilds the index and reruns the current draft search when indexing finishes', async () => {
+    const store = useLogStore()
+
+    store.hasProject = true
+    store.selectedLogFilePath = '/tmp/test.log'
+    store.searchDraft = 'callback timeout'
+    store.searchTerm = 'callback timeout'
+    store.diskSearch = {
+      ...store.diskSearch,
+      query: 'callback timeout',
+      status: 'completed'
+    }
+
+    store.loadInitialEntries = vi.fn().mockResolvedValue(undefined)
+    store.submitSearch = vi.fn().mockResolvedValue(undefined)
+
+    const rebuildStarted = await store.rebuildLogIndex()
+    expect(rebuildStarted).toBe(true)
+    expect(window.electronAPI.rebuildLogIndex).toHaveBeenCalledTimes(1)
+    expect(store.searchTerm).toBe('')
+    expect(store.diskSearch.status).toBe('idle')
+
+    store.handleIncomingIndexStatus({
+      logFilePath: '/tmp/test.log',
+      status: 'indexing'
+    })
+    store.handleIncomingIndexStatus({
+      logFilePath: '/tmp/test.log',
+      status: 'ready'
+    })
+
+    await Promise.resolve()
+
+    expect(store.loadInitialEntries).toHaveBeenCalledTimes(1)
+    expect(store.submitSearch).toHaveBeenCalledTimes(1)
+    expect(store.pendingRebuildSearchQuery).toBe(null)
   })
 })

@@ -13,6 +13,7 @@
       :autoScroll="logStore.autoScroll"
       :isRefreshing="logStore.isRefreshing"
       :searchTerm="logStore.searchDraft"
+      :indexStatus="logStore.logIndex"
       :invertOrder="invertOrder"
       :activeCategories="activeCategories"
       @select-project="logStore.selectProject"
@@ -21,6 +22,7 @@
       @refresh-log-files="logStore.refreshAvailableLogFiles"
       @refresh="logStore.refreshLogs"
       @clear="logStore.clearLogs"
+      @rebuild-index="logStore.rebuildLogIndex"
       @toggle-auto-scroll="logStore.toggleAutoScroll"
       @toggle-watching="logStore.toggleWatching"
       @update-search="updateSearch"
@@ -75,6 +77,7 @@
 
     <!-- Footer -->
     <Footer
+      :hasProject="logStore.hasProject"
       :totalRequests="logStore.viewerLogData.totalEntries"
       :totalEntries="logStore.totalLogEntries"
       :indexStatus="logStore.logIndex"

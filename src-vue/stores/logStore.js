@@ -287,7 +287,8 @@ export const useLogStore = defineStore('log', {
     searchTerm: '',
     diskSearch: createEmptySearchState(),
     logIndex: createEmptyIndexState(),
-    indexedViewer: createEmptyIndexedViewerState()
+    indexedViewer: createEmptyIndexedViewerState(),
+    pendingRebuildSearchQuery: null
   }),
 
   getters: {
@@ -430,6 +431,7 @@ export const useLogStore = defineStore('log', {
       this.resetDiskSearchState()
       this.logIndex = createEmptyIndexState()
       this.resetIndexedViewerState()
+      this.pendingRebuildSearchQuery = null
     },
 
     applyProjectSelection(result) {
@@ -670,6 +672,43 @@ export const useLogStore = defineStore('log', {
         this.handleIncomingIndexStatus(status)
       } catch (error) {
         console.error('Error refreshing log index status:', error)
+      }
+    },
+
+    async rebuildLogIndex() {
+      if (!window.electronAPI || !this.hasProject || !this.selectedLogFilePath || this.isLogIndexRunning) {
+        return false
+      }
+
+      const rebuildSearchQuery = this.searchDraft.trim()
+
+      try {
+        if (this.isDiskSearchRunning) {
+          await window.electronAPI.cancelLogSearch()
+        }
+      } catch (error) {
+        console.error('Error stopping disk search before index rebuild:', error)
+      }
+
+      this.pendingRebuildSearchQuery = rebuildSearchQuery
+      this.selectedUuid = null
+      this.searchTerm = ''
+      this.resetDiskSearchState()
+      this.resetIndexedViewerState()
+
+      try {
+        const result = await window.electronAPI.rebuildLogIndex()
+        if (!result.success) {
+          this.pendingRebuildSearchQuery = null
+          console.error('Failed to rebuild log index:', result.message)
+          return false
+        }
+
+        return true
+      } catch (error) {
+        this.pendingRebuildSearchQuery = null
+        console.error('Error rebuilding log index:', error)
+        return false
       }
     },
 
@@ -919,9 +958,33 @@ export const useLogStore = defineStore('log', {
         return
       }
 
+      const previousStatus = this.logIndex.status
+
       this.logIndex = {
         ...createEmptyIndexState(),
         ...payload
+      }
+
+      if (this.pendingRebuildSearchQuery === null) {
+        return
+      }
+
+      if (payload.status === 'ready' && previousStatus === 'indexing') {
+        const rebuildSearchQuery = this.pendingRebuildSearchQuery
+        this.pendingRebuildSearchQuery = null
+
+        void this.loadInitialEntries().then(() => {
+          if (!rebuildSearchQuery || rebuildSearchQuery !== this.searchDraft.trim()) {
+            return
+          }
+
+          void this.submitSearch()
+        })
+        return
+      }
+
+      if (payload.status === 'error' || payload.status === 'unsupported' || payload.status === 'cancelled') {
+        this.pendingRebuildSearchQuery = null
       }
     },
 

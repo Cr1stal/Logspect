@@ -51,6 +51,17 @@
         <Trash2 :size="16" />
       </button>
 
+      <button
+        v-if="hasProject"
+        class="index-btn"
+        :disabled="isRebuildDisabled"
+        @click="$emit('rebuild-index')"
+        :title="indexButtonTitle"
+      >
+        <RotateCcw :size="14" />
+        {{ indexButtonLabel }}
+      </button>
+
       <!-- Search/Filter Input -->
       <div v-if="hasProject" class="search-container">
         <div class="search-input-wrapper">
@@ -124,7 +135,8 @@ import {
   Globe,
   Smartphone,
   Cog,
-  MoreHorizontal
+  MoreHorizontal,
+  RotateCcw
 } from 'lucide-vue-next'
 
 export default {
@@ -140,7 +152,8 @@ export default {
     Globe,
     Smartphone,
     Cog,
-    MoreHorizontal
+    MoreHorizontal,
+    RotateCcw
   },
   props: {
     hasProject: {
@@ -182,6 +195,10 @@ export default {
     searchTerm: {
       type: String,
       default: ''
+    },
+    indexStatus: {
+      type: Object,
+      default: () => ({})
     },
     invertOrder: {
       type: Boolean,
@@ -231,6 +248,23 @@ export default {
         },
         ...this.availableLogFiles
       ];
+    },
+    isRebuildDisabled() {
+      return !this.hasProject || this.indexStatus.status === 'indexing' || this.indexStatus.status === 'unsupported'
+    },
+    indexButtonLabel() {
+      return this.indexStatus.status === 'indexing' ? 'Rebuilding…' : 'Rebuild index'
+    },
+    indexButtonTitle() {
+      if (this.indexStatus.status === 'indexing') {
+        return 'Index rebuild in progress'
+      }
+
+      if (this.indexStatus.status === 'unsupported') {
+        return 'SQLite index is unavailable in this runtime'
+      }
+
+      return 'Rebuild the SQLite index from scratch'
     }
   },
   methods: {
@@ -248,7 +282,7 @@ export default {
       }
     }
   },
-  emits: ['select-project', 'select-log-file', 'browse-log-file', 'refresh-log-files', 'refresh', 'clear', 'toggle-auto-scroll', 'toggle-watching', 'update-search', 'submit-search', 'toggle-invert', 'toggle-category']
+  emits: ['select-project', 'select-log-file', 'browse-log-file', 'refresh-log-files', 'refresh', 'clear', 'rebuild-index', 'toggle-auto-scroll', 'toggle-watching', 'update-search', 'submit-search', 'toggle-invert', 'toggle-category']
 }
 </script>
 
@@ -297,6 +331,10 @@ export default {
 
 .clear-btn {
   @apply w-8 h-8 bg-slate-600 border border-slate-500 text-slate-200 rounded cursor-pointer transition-all duration-200 hover:bg-slate-500 flex items-center justify-center;
+}
+
+.index-btn {
+  @apply h-8 bg-slate-600 border border-slate-500 text-slate-200 rounded cursor-pointer transition-all duration-200 hover:bg-slate-500 inline-flex items-center justify-center gap-1.5 px-3 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-slate-600;
 }
 
 .search-container {
