@@ -5,6 +5,31 @@
     </div>
 
     <div class="toolbar-center">
+      <div v-if="hasProject" class="log-file-container">
+        <FileText :size="14" class="log-file-icon" />
+        <select
+          class="log-file-select"
+          :value="selectedLogFilePath"
+          @focus="$emit('refresh-log-files')"
+          @change="$emit('select-log-file', $event.target.value)"
+        >
+          <option
+            v-for="logFile in logFileOptions"
+            :key="logFile.path"
+            :value="logFile.path"
+          >
+            {{ logFileLabel(logFile) }}
+          </option>
+        </select>
+        <button
+          class="log-file-browse-btn"
+          title="Browse any .log file"
+          @click="$emit('browse-log-file')"
+        >
+          <FolderOpen :size="14" />
+        </button>
+      </div>
+
       <!-- Pause/Unpause Button -->
       <button
         v-if="hasProject"
@@ -87,6 +112,7 @@ import {
   Search,
   Check,
   FolderOpen,
+  FileText,
   Globe,
   Smartphone,
   Cog,
@@ -102,6 +128,7 @@ export default {
     Search,
     Check,
     FolderOpen,
+    FileText,
     Globe,
     Smartphone,
     Cog,
@@ -115,6 +142,14 @@ export default {
     projectDirectory: {
       type: String,
       default: ''
+    },
+    selectedLogFilePath: {
+      type: String,
+      default: ''
+    },
+    availableLogFiles: {
+      type: Array,
+      default: () => []
     },
     isWatching: {
       type: Boolean,
@@ -163,9 +198,41 @@ export default {
     projectName() {
       if (!this.projectDirectory) return 'Project Name';
       return this.projectDirectory.split('/').pop() || 'Project Name';
+    },
+    logFileOptions() {
+      if (this.availableLogFiles.length === 0) {
+        return this.selectedLogFilePath ? [{
+          path: this.selectedLogFilePath,
+          displayPath: this.selectedLogFilePath,
+          relativePath: this.selectedLogFilePath.split('/').slice(-2).join('/'),
+          exists: false
+        }] : [];
+      }
+
+      const hasSelectedLogFile = this.availableLogFiles.some(file => file.path === this.selectedLogFilePath);
+      if (hasSelectedLogFile || !this.selectedLogFilePath) {
+        return this.availableLogFiles;
+      }
+
+      return [
+        {
+          path: this.selectedLogFilePath,
+          displayPath: this.selectedLogFilePath,
+          relativePath: this.selectedLogFilePath.split('/').slice(-2).join('/'),
+          exists: false
+        },
+        ...this.availableLogFiles
+      ];
     }
   },
   methods: {
+    logFileLabel(logFile) {
+      if (logFile.exists === false) {
+        return `${logFile.displayPath || logFile.relativePath} (waiting)`;
+      }
+
+      return logFile.displayPath || logFile.relativePath;
+    },
     focusSearchInput() {
       if (this.$refs.searchInput && this.hasProject) {
         this.$refs.searchInput.focus();
@@ -173,7 +240,7 @@ export default {
       }
     }
   },
-  emits: ['select-project', 'refresh', 'clear', 'toggle-auto-scroll', 'toggle-watching', 'update-search', 'toggle-invert', 'toggle-category']
+  emits: ['select-project', 'select-log-file', 'browse-log-file', 'refresh-log-files', 'refresh', 'clear', 'toggle-auto-scroll', 'toggle-watching', 'update-search', 'toggle-invert', 'toggle-category']
 }
 </script>
 
@@ -194,6 +261,22 @@ export default {
 
 .toolbar-center {
   @apply flex items-center gap-3;
+}
+
+.log-file-container {
+  @apply flex items-center gap-2;
+}
+
+.log-file-icon {
+  @apply text-slate-400;
+}
+
+.log-file-select {
+  @apply max-w-52 bg-slate-600 border border-slate-500 text-slate-200 px-3 py-1.5 rounded cursor-pointer text-xs font-mono focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500;
+}
+
+.log-file-browse-btn {
+  @apply w-8 h-8 bg-slate-600 border border-slate-500 text-slate-200 rounded cursor-pointer transition-all duration-200 hover:bg-slate-500 flex items-center justify-center;
 }
 
 .pause-btn {

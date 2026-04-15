@@ -1,4 +1,5 @@
 import { ipcMain, dialog } from 'electron';
+import path from 'path';
 import log from "electron-log";
 import { prepareProject } from './projectManager.js';
 import { startWatching, getWatchingStatus } from './logWatcher.js';
@@ -31,13 +32,15 @@ export const streamDataToRenderer = () => {
  * @param {string} projectDirectory - Path to the selected project
  * @param {string} logFilePath - Path to the log file
  * @param {boolean} isWatching - Whether file watching is active
+ * @param {Array} availableLogFiles - Available log files inside the project
  */
-export const notifyProjectSelected = (projectDirectory, logFilePath, isWatching) => {
+export const notifyProjectSelected = (projectDirectory, logFilePath, isWatching, availableLogFiles = []) => {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('project-selected', {
       projectDirectory: projectDirectory,
       logFilePath: logFilePath,
-      isWatching: isWatching
+      isWatching: isWatching,
+      availableLogFiles: availableLogFiles
     });
   }
 };
@@ -48,6 +51,53 @@ export const notifyProjectSelected = (projectDirectory, logFilePath, isWatching)
  */
 export const setupIpcHandlers = () => {
   let projectDirectory = null;
+  let availableLogFiles = [];
+
+  const buildProjectResponse = (projectResult, isWatching) => ({
+    success: true,
+    message: projectResult.message,
+    projectDir: projectResult.projectPath,
+    logFilePath: projectResult.logPath,
+    logFileExists: projectResult.logFileExists,
+    hasRailsGem: projectResult.hasRailsGem,
+    availableLogFiles: projectResult.availableLogFiles || [],
+    isWatching: isWatching
+  });
+
+  const activateProjectSelection = async (projectResult) => {
+    const watchingStatus = getWatchingStatus();
+    const isSameSource = projectDirectory === projectResult.projectPath &&
+      watchingStatus.logFilePath === projectResult.logPath;
+
+    const watchResult = (isSameSource && watchingStatus.isWatching)
+      ? { success: true }
+      : await startWatching(projectResult.logPath);
+
+    if (!watchResult.success) {
+      return {
+        success: false,
+        message: watchResult.message
+      };
+    }
+
+    projectDirectory = projectResult.projectPath;
+    availableLogFiles = projectResult.availableLogFiles || [];
+
+    if (!isSameSource) {
+      clearAllLogData();
+      streamDataToRenderer();
+    }
+
+    const updatedWatchingStatus = getWatchingStatus();
+    notifyProjectSelected(
+      projectDirectory,
+      projectResult.logPath,
+      updatedWatchingStatus.isWatching,
+      availableLogFiles
+    );
+
+    return buildProjectResponse(projectResult, updatedWatchingStatus.isWatching);
+  };
 
   // Handler for directory selection
   ipcMain.handle('select-directory', async () => {
@@ -68,29 +118,7 @@ export const setupIpcHandlers = () => {
       const projectResult = await prepareProject(selectedDir);
 
       if (projectResult.success) {
-        projectDirectory = projectResult.projectPath;
-
-        // Start watching the log file
-        const watchResult = await startWatching(projectResult.logPath);
-
-        if (watchResult.success) {
-          // Notify renderer about the new project
-          notifyProjectSelected(projectDirectory, projectResult.logPath, true);
-
-          return {
-            success: true,
-            message: projectResult.message,
-            projectDir: projectResult.projectPath,
-            logFilePath: projectResult.logPath,
-            logFileExists: true, // We can determine this from prepareProject if needed
-            hasRailsGem: projectResult.hasRailsGem
-          };
-        } else {
-          return {
-            success: false,
-            message: watchResult.message
-          };
-        }
+        return await activateProjectSelection(projectResult);
       } else {
         return projectResult;
       }
@@ -110,29 +138,7 @@ export const setupIpcHandlers = () => {
       const projectResult = await prepareProject(projectPath);
 
       if (projectResult.success) {
-        projectDirectory = projectResult.projectPath;
-
-        // Start watching the log file
-        const watchResult = await startWatching(projectResult.logPath);
-
-        if (watchResult.success) {
-          // Notify renderer about the new project
-          notifyProjectSelected(projectDirectory, projectResult.logPath, true);
-
-          return {
-            success: true,
-            message: projectResult.message,
-            projectDir: projectResult.projectPath,
-            logFilePath: projectResult.logPath,
-            logFileExists: true, // We can determine this from prepareProject if needed
-            hasRailsGem: projectResult.hasRailsGem
-          };
-        } else {
-          return {
-            success: false,
-            message: watchResult.message
-          };
-        }
+        return await activateProjectSelection(projectResult);
       } else {
         return projectResult;
       }
@@ -152,8 +158,122 @@ export const setupIpcHandlers = () => {
       projectDirectory: projectDirectory,
       logFilePath: watchingStatus.logFilePath,
       isWatching: watchingStatus.isWatching,
+      availableLogFiles: availableLogFiles,
       hasProject: !!projectDirectory
     };
+  });
+
+  // Handler to refresh available log files for the current project
+  ipcMain.handle('get-project-log-files', async () => {
+    try {
+      if (!projectDirectory) {
+        return {
+          success: false,
+          message: 'No Rails project selected.',
+          availableLogFiles: []
+        };
+      }
+
+      const watchingStatus = getWatchingStatus();
+      const projectResult = await prepareProject(projectDirectory, watchingStatus.logFilePath);
+
+      if (!projectResult.success) {
+        return {
+          success: false,
+          message: projectResult.message,
+          availableLogFiles: availableLogFiles
+        };
+      }
+
+      availableLogFiles = projectResult.availableLogFiles || [];
+
+      return {
+        success: true,
+        availableLogFiles: availableLogFiles,
+        logFilePath: projectResult.logPath,
+        logFileExists: projectResult.logFileExists
+      };
+    } catch (error) {
+      console.error('Error getting project log files:', error);
+      return {
+        success: false,
+        message: `Error: ${error.message}`,
+        availableLogFiles: availableLogFiles
+      };
+    }
+  });
+
+  // Handler for switching the active project log file
+  ipcMain.handle('select-project-log-file', async (event, logFilePath) => {
+    try {
+      if (!projectDirectory) {
+        return {
+          success: false,
+          message: 'Select a Rails project before choosing a log file.'
+        };
+      }
+
+      const projectResult = await prepareProject(projectDirectory, logFilePath);
+      if (!projectResult.success) {
+        return projectResult;
+      }
+
+      return await activateProjectSelection(projectResult);
+    } catch (error) {
+      console.error('Error selecting project log file:', error);
+      return {
+        success: false,
+        message: `Error: ${error.message}`
+      };
+    }
+  });
+
+  // Handler for browsing any log file on disk for the current project
+  ipcMain.handle('browse-project-log-file', async () => {
+    try {
+      if (!projectDirectory) {
+        return {
+          success: false,
+          message: 'Select a Rails project before choosing a log file.'
+        };
+      }
+
+      const watchingStatus = getWatchingStatus();
+      const defaultPath = watchingStatus.logFilePath
+        ? path.dirname(watchingStatus.logFilePath)
+        : path.join(projectDirectory, 'log');
+
+      const result = await dialog.showOpenDialog(mainWindow, {
+        properties: ['openFile'],
+        title: 'Select Log File',
+        defaultPath,
+        filters: [
+          { name: 'Log files', extensions: ['log'] },
+          { name: 'All files', extensions: ['*'] }
+        ]
+      });
+
+      if (result.canceled || result.filePaths.length === 0) {
+        return {
+          success: false,
+          canceled: true,
+          message: 'No log file selected.'
+        };
+      }
+
+      const projectResult = await prepareProject(projectDirectory, result.filePaths[0]);
+      if (!projectResult.success) {
+        return projectResult;
+      }
+
+      return await activateProjectSelection(projectResult);
+    } catch (error) {
+      console.error('Error browsing project log file:', error);
+      return {
+        success: false,
+        message: `Error: ${error.message}`
+      };
+    }
   });
 
   // Handler for when renderer requests log data
