@@ -1,7 +1,7 @@
 {
   "name": "logspect",
   "description": "Logspect is a tool for viewing and analyzing Ruby on Rails logs.",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "main": ".vite/build/main.js",
   "scripts": {
     "start": "electron-forge start",

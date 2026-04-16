@@ -19,10 +19,30 @@ jobs:
     runs-on: macos-latest
 
     steps:
+      - name: Resolve release metadata
+        id: release_meta
+        shell: bash
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            if [ "${GITHUB_REF_NAME}" != "main" ]; then
+              echo "::error::Run the manual release workflow from the main branch."
+              exit 1
+            fi
+
+            tag="${{ inputs.tag }}"
+            ref="${GITHUB_SHA}"
+          else
+            tag="${GITHUB_REF_NAME}"
+            ref="${GITHUB_REF}"
+          fi
+
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
+
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          ref: ${{ steps.release_meta.outputs.ref }}
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -38,11 +58,7 @@ jobs:
       - name: Validate release metadata
         shell: bash
         run: |
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            tag="${{ inputs.tag }}"
-          else
-            tag="${GITHUB_REF_NAME}"
-          fi
+          tag="${{ steps.release_meta.outputs.tag }}"
 
           if [[ ! "${tag}" =~ ^v[0-9]+(\.[0-9]+)*([-.][0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::Release tag must look like v0.5.0"

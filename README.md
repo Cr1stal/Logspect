@@ -102,7 +102,8 @@ GitHub Actions can publish an unsigned macOS release through Electron Forge.
 
 How it works:
 
-- Push a tag like `v0.5.0`, or run the `Release macOS build` workflow manually.
+- Push a tag like `v0.5.0`, or run the `Release macOS build` workflow manually from `main`.
+- Manual workflow runs use the selected `main` commit directly, so the release tag does not need to exist before the run starts.
 - The tag must match the version in `package.json`.
 - Electron Forge makes the `.dmg` and `.zip` artifacts and publishes them to GitHub Releases.
 - No Apple Developer membership is required.
