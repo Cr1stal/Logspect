@@ -1,6 +1,6 @@
 import fs from 'fs';
 import log from "electron-log";
-import { parseLogLines } from './logParser.js';
+import { createParsingContext, parseLogLines } from './logParser.js';
 import { addLogEntry } from './logStorage.js';
 
 export const INITIAL_HISTORY_MAX_BYTES = 10 * 1024 * 1024;
@@ -13,6 +13,7 @@ let isWatching = false;
 let isReading = false;
 let hasPendingRead = false;
 let dropPartialLeadingLine = false;
+let parsingContext = createParsingContext();
 
 // Callback for when new log data is available
 let onLogDataCallback = null;
@@ -93,6 +94,7 @@ export const startWatching = async (newLogPath, options = {}) => {
     logFilePath = newLogPath;
     lastSize = 0;
     dropPartialLeadingLine = false;
+    parsingContext = createParsingContext();
 
     let shouldLoadExistingContent = false;
     const hasCustomStartOffset = Number.isInteger(options.startOffset) && options.startOffset >= 0;
@@ -214,7 +216,9 @@ export const readLogFile = async () => {
 const processNewLogContent = (content) => {
   // Split by lines and process each line
   const lines = content.split(/\r?\n/).filter(line => line.trim());
-  const parsedEntries = parseLogLines(lines);
+  const parsedEntries = parseLogLines(lines, {
+    context: parsingContext
+  });
   let matchedEntries = 0;
   let newGroups = 0;
   let unmatchedEntries = 0;

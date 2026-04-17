@@ -353,4 +353,30 @@ describe('logIndex', () => {
     expect(viewerResult.page.entries[0].entriesCount).toBe(3);
     expect(viewerResult.page.entries[0].entries.map(entry => entry.lineNumber)).toEqual([1, 2, 3]);
   });
+
+  it('indexes Rails request lifecycle lines without UUID as one HTTP group', async () => {
+    const { directoryPath, logFilePath } = await createTempLogFile([
+      'Started GET /users',
+      'Processing by UsersController#index as HTML',
+      'Parameters: {"page"=>"1"}',
+      'Completed 200 OK in 12ms'
+    ].join('\n'));
+
+    await waitForIndexReady(logFilePath, directoryPath);
+
+    const { searchIndexedLogFile, setLogIndexStorageDirectory } = await import('../logIndex.js');
+    setLogIndexStorageDirectory(directoryPath);
+
+    const result = await searchIndexedLogFile(logFilePath, 'page');
+
+    expect(result.success).toBe(true);
+    expect(result.results.entries).toHaveLength(1);
+    expect(result.results.entries[0].uuid).toBe('http-1');
+    expect(result.results.entries[0].entriesCount).toBe(4);
+    expect(result.results.entries[0].metadata).toMatchObject({
+      groupingStrategy: 'http-context-heuristic',
+      groupingConfidence: 'medium'
+    });
+    expect(result.results.entries[0].entries.map(entry => entry.lineNumber)).toEqual([1, 2, 3, 4]);
+  });
 });

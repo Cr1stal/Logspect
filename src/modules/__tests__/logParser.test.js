@@ -1,18 +1,21 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
+  createParsingContext,
   uuidRegex,
   jidRegex,
   extractLogInfo,
   parseLogLine,
   parseLogLines,
   isValidUuid,
-  isValidJid
+  isValidJid,
+  resetDefaultParsingContext
 } from '../logParser.js';
 
 describe('Log Parser', () => {
   beforeEach(() => {
     // Reset any module-level state between tests
     vi.resetAllMocks();
+    resetDefaultParsingContext();
   });
 
   describe('uuidRegex', () => {
@@ -125,16 +128,53 @@ describe('Log Parser', () => {
         const content = 'GET /dashboard/overview 200 OK 45ms';
         const result = extractLogInfo(content);
 
-        expect(result).toEqual({
+        expect(result).toMatchObject({
           type: 'web',
           subType: 'GET',
           success: true,
           metadata: {
+            method: 'GET',
             path: '/dashboard/overview',
+            requestPhase: 'summary',
             statusCode: 200,
             responseTime: 45
           },
           title: 'GET /dashboard/overview'
+        });
+      });
+
+      it('should classify Rails lifecycle lines as web request evidence', () => {
+        const started = extractLogInfo('Started GET /users');
+        const completed = extractLogInfo('Completed 200 OK in 12ms');
+        const parameters = extractLogInfo('Parameters: {"id"=>"42"}');
+
+        expect(started).toMatchObject({
+          type: 'web',
+          subType: 'GET',
+          title: 'GET /users',
+          metadata: {
+            requestPhase: 'start',
+            path: '/users'
+          }
+        });
+
+        expect(completed).toMatchObject({
+          type: 'web',
+          subType: 'HTTP',
+          success: true,
+          metadata: {
+            requestPhase: 'finish',
+            statusCode: 200,
+            responseTime: 12
+          }
+        });
+
+        expect(parameters).toMatchObject({
+          type: 'web',
+          title: 'Request Parameters',
+          metadata: {
+            requestPhase: 'parameters'
+          }
         });
       });
 
@@ -273,9 +313,16 @@ describe('Log Parser', () => {
       const logLine = 'GET /dashboard 200 OK';
       const result = parseLogLine(logLine);
 
-      expect(result.uuid).toBe(null);
+      expect(result.uuid).toMatch(/^http-live-\d+$/);
       expect(result.content).toBe('GET /dashboard 200 OK');
       expect(result.isNewEntry).toBe(false);
+      expect(result.logInfo).toMatchObject({
+        type: 'web',
+        metadata: {
+          groupingStrategy: 'http-summary-heuristic',
+          groupingConfidence: 'medium'
+        }
+      });
     });
 
     it('should strip VT control characters', () => {
@@ -318,7 +365,7 @@ describe('Log Parser', () => {
       expect(results).toHaveLength(4); // Empty lines filtered out
       expect(results[0].uuid).toBe('aa32797f-b087-4d45-9d99-28198952a784');
       expect(results[1].uuid).toBe('abc123');
-      expect(results[2].uuid).toBe(null);
+      expect(results[2].uuid).toMatch(/^http-live-\d+$/);
       expect(results[3].uuid).toMatch(/^sys-\d+$/);
     });
 
@@ -434,6 +481,41 @@ describe('Log Parser', () => {
 
       // Should have different UUIDs
       expect(line1.uuid).not.toBe(line2.uuid);
+    });
+  });
+
+  describe('HTTP RuntimeWork assembly', () => {
+    it('groups Rails request lifecycle lines into one heuristic HTTP work unit', () => {
+      const context = createParsingContext();
+      const results = [
+        parseLogLine('Started GET /users', { context }),
+        parseLogLine('Processing by UsersController#index as HTML', { context }),
+        parseLogLine('Parameters: {"page"=>"1"}', { context }),
+        parseLogLine('Completed 200 OK in 12ms', { context })
+      ];
+
+      const groupIds = new Set(results.map(result => result.uuid));
+      expect(groupIds.size).toBe(1);
+
+      results.forEach((result) => {
+        expect(result.logInfo.metadata.groupingStrategy).toMatch(/^http-/);
+      });
+    });
+
+    it('marks ambiguous request correlation as low-confidence', () => {
+      const context = createParsingContext();
+      const first = parseLogLine('Started GET /users', { context, lineNumber: 1, fallbackGrouping: 'line-number' });
+      const second = parseLogLine('Started GET /users', { context, lineNumber: 2, fallbackGrouping: 'line-number' });
+      const completed = parseLogLine('Completed 200 OK in 12ms', { context, lineNumber: 3, fallbackGrouping: 'line-number' });
+
+      expect(first.uuid).toBe('http-1');
+      expect(second.uuid).toBe('http-2');
+      expect(completed.uuid).toBe('http-2');
+      expect(completed.logInfo.metadata).toMatchObject({
+        groupingConfidence: 'low',
+        groupingAmbiguous: true,
+        groupingAmbiguityReason: 'multiple-open-http-requests'
+      });
     });
   });
 
