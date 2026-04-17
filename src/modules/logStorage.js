@@ -1,4 +1,5 @@
 import log from "electron-log";
+import { mergeLogMetadata } from './logParser.js';
 
 /**
  * Efficient storage for grouped log entries by UUID
@@ -45,7 +46,7 @@ export const addLogEntry = (uuid, content, logInfo) => {
 
   // Merge metadata
   if (logInfo.metadata && Object.keys(logInfo.metadata).length > 0) {
-    logGroup.metadata = { ...logGroup.metadata, ...logInfo.metadata };
+    logGroup.metadata = mergeLogMetadata(logGroup.metadata, logInfo.metadata);
   }
 
   return {

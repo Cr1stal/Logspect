@@ -6,7 +6,11 @@ import path from 'path';
 import readline from 'node:readline';
 import util from 'node:util';
 import log from 'electron-log';
-import { extractLogInfo, jidRegex, uuidRegex } from './logParser.js';
+import {
+  createParsingContext,
+  mergeLogMetadata,
+  parseLogLine
+} from './logParser.js';
 
 const INDEX_STREAM_HIGH_WATER_MARK = 256 * 1024;
 const INDEX_BATCH_SIZE = 2000;
@@ -372,59 +376,27 @@ const buildIndexedCoverageState = (persistedState, stats) => {
   };
 };
 
-const createIndexRecord = (rawLine, lineNumber) => {
-  const sanitizedLine = util.stripVTControlCharacters(rawLine).trim();
-  if (!sanitizedLine) {
+const createIndexRecord = (rawLine, lineNumber, context) => {
+  const parsed = parseLogLine(rawLine, {
+    context,
+    lineNumber,
+    fallbackGrouping: 'line-number'
+  });
+
+  if (!parsed?.uuid || !parsed.logInfo) {
     return null;
   }
 
-  const uuidMatch = sanitizedLine.match(uuidRegex);
-  if (uuidMatch) {
-    const content = sanitizedLine.replace(uuidRegex, '').trim();
-    const logInfo = extractLogInfo(content);
-
-    return {
-      lineNumber,
-      groupId: uuidMatch[1],
-      content,
-      type: logInfo.type || 'unknown',
-      subType: logInfo.subType || 'unknown',
-      success: logInfo.success,
-      title: logInfo.title || 'Search Match',
-      metadataJson: JSON.stringify(logInfo.metadata || {}),
-      metadataText: Object.values(logInfo.metadata || {}).join(' ')
-    };
-  }
-
-  const jidMatch = sanitizedLine.match(jidRegex);
-  if (jidMatch) {
-    const logInfo = extractLogInfo(sanitizedLine);
-
-    return {
-      lineNumber,
-      groupId: jidMatch[2],
-      content: sanitizedLine,
-      type: logInfo.type || 'unknown',
-      subType: logInfo.subType || 'unknown',
-      success: logInfo.success,
-      title: logInfo.title || 'Search Match',
-      metadataJson: JSON.stringify(logInfo.metadata || {}),
-      metadataText: Object.values(logInfo.metadata || {}).join(' ')
-    };
-  }
-
-  const logInfo = extractLogInfo(sanitizedLine);
-
   return {
     lineNumber,
-    groupId: `line-${lineNumber}`,
-    content: sanitizedLine,
-    type: logInfo.type || 'unknown',
-    subType: logInfo.subType || 'unknown',
-    success: logInfo.success,
-    title: logInfo.title || 'Search Match',
-    metadataJson: JSON.stringify(logInfo.metadata || {}),
-    metadataText: Object.values(logInfo.metadata || {}).join(' ')
+    groupId: parsed.uuid,
+    content: util.stripVTControlCharacters(parsed.content).trim(),
+    type: parsed.logInfo.type || 'unknown',
+    subType: parsed.logInfo.subType || 'unknown',
+    success: parsed.logInfo.success,
+    title: parsed.logInfo.title || 'Search Match',
+    metadataJson: JSON.stringify(parsed.logInfo.metadata || {}),
+    metadataText: Object.values(parsed.logInfo.metadata || {}).join(' ')
   };
 };
 
@@ -603,6 +575,7 @@ const runIndexJob = async (job, dbPath, statsSnapshot, mode, baselineState) => {
   let indexedLineCount = mode === 'append' ? baselineState.indexedLineCount : 0;
   let lastProgressEmitAt = 0;
   let bytesIndexed = startByte;
+  const parsingContext = createParsingContext();
 
   const insertLineStatement = db.prepare(`
     INSERT INTO log_lines (
@@ -724,7 +697,7 @@ const runIndexJob = async (job, dbPath, statsSnapshot, mode, baselineState) => {
         }
 
         indexedLineCount += 1;
-        const record = createIndexRecord(rawLine, indexedLineCount);
+        const record = createIndexRecord(rawLine, indexedLineCount, parsingContext);
 
         if (record) {
           batch.push(record);
@@ -1135,10 +1108,7 @@ const buildIndexedResults = (
       group.success = Boolean(row.success);
     }
     if (row.metadataJson) {
-      group.metadata = {
-        ...group.metadata,
-        ...JSON.parse(row.metadataJson)
-      };
+      group.metadata = mergeLogMetadata(group.metadata, JSON.parse(row.metadataJson));
     }
     group.searchMeta.groupFirstLineNumber = Math.min(group.searchMeta.groupFirstLineNumber, row.lineNumber);
     group.searchMeta.groupLastLineNumber = Math.max(group.searchMeta.groupLastLineNumber, row.lineNumber);
@@ -1262,10 +1232,7 @@ const buildIndexedViewGroups = (groupRows, groupPage) => {
     }
 
     if (row.metadataJson) {
-      group.metadata = {
-        ...group.metadata,
-        ...JSON.parse(row.metadataJson)
-      };
+      group.metadata = mergeLogMetadata(group.metadata, JSON.parse(row.metadataJson));
     }
 
     group.entries.push({

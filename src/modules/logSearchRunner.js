@@ -2,7 +2,11 @@ import fs from 'fs';
 import readline from 'node:readline';
 import util from 'node:util';
 import log from 'electron-log';
-import { extractLogInfo, jidRegex, uuidRegex } from './logParser.js';
+import {
+  createParsingContext,
+  mergeLogMetadata,
+  parseLogLine
+} from './logParser.js';
 import {
   searchIndexedLogFile,
   setLogIndexStorageDirectory
@@ -31,35 +35,21 @@ const normalizeQueryTokens = (query) => (
     .filter(Boolean)
 );
 
-const createSearchRecord = (rawLine, lineNumber) => {
-  const sanitizedLine = util.stripVTControlCharacters(rawLine).trim();
-  if (!sanitizedLine) {
+const createSearchRecord = (rawLine, lineNumber, context) => {
+  const parsed = parseLogLine(rawLine, {
+    context,
+    lineNumber,
+    fallbackGrouping: 'line-number'
+  });
+
+  if (!parsed?.uuid || !parsed.logInfo) {
     return null;
   }
 
-  const uuidMatch = sanitizedLine.match(uuidRegex);
-  if (uuidMatch) {
-    const content = sanitizedLine.replace(uuidRegex, '').trim();
-    return {
-      groupId: uuidMatch[1],
-      content,
-      logInfo: extractLogInfo(content)
-    };
-  }
-
-  const jidMatch = sanitizedLine.match(jidRegex);
-  if (jidMatch) {
-    return {
-      groupId: jidMatch[2],
-      content: sanitizedLine,
-      logInfo: extractLogInfo(sanitizedLine)
-    };
-  }
-
   return {
-    groupId: `line-${lineNumber}`,
-    content: sanitizedLine,
-    logInfo: extractLogInfo(sanitizedLine)
+    groupId: parsed.uuid,
+    content: util.stripVTControlCharacters(parsed.content).trim(),
+    logInfo: parsed.logInfo
   };
 };
 
@@ -115,10 +105,7 @@ const appendRecordToGroup = (group, record, lineNumber) => {
   }
 
   if (record.logInfo.metadata && Object.keys(record.logInfo.metadata).length > 0) {
-    group.metadata = {
-      ...group.metadata,
-      ...record.logInfo.metadata
-    };
+    group.metadata = mergeLogMetadata(group.metadata, record.logInfo.metadata);
   }
 
   group.searchMeta.groupFirstLineNumber = Math.min(group.searchMeta.groupFirstLineNumber, lineNumber);
@@ -190,6 +177,7 @@ const runStreamScan = async (
   const queryTokens = normalizeQueryTokens(query);
   const matchedGroups = new Map();
   const resultsByGroup = new Map();
+  const discoveryParsingContext = createParsingContext();
   const summaryState = {
     matchedLines: 0,
     shownGroups: 0,
@@ -298,7 +286,7 @@ const runStreamScan = async (
       lineNumber += 1;
       summaryState.scannedLines = lineNumber;
 
-      const record = createSearchRecord(rawLine, lineNumber);
+      const record = createSearchRecord(rawLine, lineNumber, discoveryParsingContext);
       if (!record) {
         continue;
       }
@@ -343,6 +331,7 @@ const runStreamScan = async (
 
     if (matchedGroups.size > 0) {
       const matchedGroupIds = new Set(matchedGroups.keys());
+      const fullGroupParsingContext = createParsingContext();
       const fullGroupStream = fs.createReadStream(logFilePath, {
         encoding: 'utf8',
         highWaterMark: SEARCH_STREAM_HIGH_WATER_MARK
@@ -372,7 +361,7 @@ const runStreamScan = async (
 
           fullGroupLineNumber += 1;
 
-          const record = createSearchRecord(rawLine, fullGroupLineNumber);
+          const record = createSearchRecord(rawLine, fullGroupLineNumber, fullGroupParsingContext);
           if (!record || !matchedGroupIds.has(record.groupId)) {
             if (fullGroupLineNumber % SEARCH_YIELD_EVERY_N_LINES === 0) {
               emitStatusUpdate('running');
