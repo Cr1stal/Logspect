@@ -67,6 +67,32 @@ const registerOpenHttpRequest = (context, request) => {
   });
 };
 
+const getRequestActivityLine = (request) => (
+  request.lastMatchedLineNumber ?? request.startLineNumber ?? -1
+);
+
+const selectMostRecentlyActiveRequest = (requests) => (
+  [...requests].sort((left, right) => {
+    const activityDelta = getRequestActivityLine(left) - getRequestActivityLine(right);
+    if (activityDelta !== 0) {
+      return activityDelta;
+    }
+
+    return (left.startLineNumber ?? -1) - (right.startLineNumber ?? -1);
+  }).at(-1) ?? null
+);
+
+const updateOpenHttpRequest = (context, groupId, patch = {}) => {
+  const request = context.openHttpRequests.find(candidate => candidate.groupId === groupId);
+
+  if (!request) {
+    return null;
+  }
+
+  Object.assign(request, patch);
+  return request;
+};
+
 const closeOpenHttpRequest = (context, groupId) => {
   const request = [...context.openHttpRequests]
     .reverse()
@@ -76,6 +102,119 @@ const closeOpenHttpRequest = (context, groupId) => {
     request.open = false;
   }
 };
+
+const isApiRequest = (request) => (
+  request.controller?.startsWith('Api::')
+  || request.path?.startsWith('/api/')
+  || request.format === 'JSON'
+);
+
+const isViewRequest = (request) => !isApiRequest(request);
+
+const singularizeToken = (value) => value.endsWith('s') ? value.slice(0, -1) : value;
+
+const normalizeControllerSegment = (segment) => segment
+  .replace(/Controller$/i, '')
+  .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+  .toLowerCase();
+
+const renderTargetMatchesRequest = (renderTarget, request) => {
+  if (!renderTarget || !request.controller) {
+    return false;
+  }
+
+  const targetLeaf = renderTarget.split('::').pop();
+  if (!targetLeaf || /^(Null|CollectionSerializer)$/i.test(targetLeaf)) {
+    return false;
+  }
+
+  const serializerStem = targetLeaf.replace(/Serializer$/i, '').toLowerCase();
+  const controllerStem = request.controller
+    .split('::')
+    .pop()
+    .replace(/Controller$/i, '')
+    .toLowerCase();
+
+  return singularizeToken(serializerStem) === singularizeToken(controllerStem);
+};
+
+const controllerMatchesRequestPath = (controller, requestPath) => {
+  if (!controller || !requestPath) {
+    return false;
+  }
+
+  const pathSegments = requestPath
+    .split('?')[0]
+    .split('/')
+    .filter(Boolean)
+    .map(segment => segment.toLowerCase());
+  const controllerSegments = controller
+    .split('::')
+    .map(normalizeControllerSegment)
+    .filter(segment => !['api', 'controller'].includes(segment) && !/^v\d+$/i.test(segment));
+
+  if (pathSegments.length === 0 || controllerSegments.length === 0) {
+    return false;
+  }
+
+  const comparableSegments = controllerSegments.slice(-Math.min(3, controllerSegments.length));
+
+  for (let index = 0; index <= pathSegments.length - comparableSegments.length; index += 1) {
+    const candidateWindow = pathSegments.slice(index, index + comparableSegments.length);
+    if (candidateWindow.every((segment, segmentIndex) => (
+      singularizeToken(segment) === singularizeToken(comparableSegments[segmentIndex])
+    ))) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+const buildHttpRequestPatch = (signal, lineNumber) => {
+  const patch = {
+    lastMatchedLineNumber: lineNumber,
+    lastSignalPhase: signal.phase
+  };
+
+  if (signal.method) {
+    patch.method = signal.method;
+  }
+
+  if (signal.path) {
+    patch.path = signal.path;
+  }
+
+  if (signal.controller) {
+    patch.controller = signal.controller;
+  }
+
+  if (signal.action) {
+    patch.action = signal.action;
+  }
+
+  if (signal.format) {
+    patch.format = signal.format;
+  }
+
+  if (signal.renderKind) {
+    patch.lastRenderKind = signal.renderKind;
+  }
+
+  if (signal.renderTarget) {
+    patch.lastRenderTarget = signal.renderTarget;
+  }
+
+  return patch;
+};
+
+const isTerminalHttpSignal = (signal, content) => (
+  signal.phase === 'finish'
+  || (signal.phase === 'summary' && (
+    signal.statusCode !== null
+    || /RoutingError|No route matches/i.test(content)
+  ))
+);
 
 const resolveHttpCandidate = (context, signal) => {
   const openRequests = context.openHttpRequests.filter(candidate => candidate.open);
@@ -104,8 +243,9 @@ const resolveHttpCandidate = (context, signal) => {
     }
 
     if (exactMatches.length > 1) {
+      const matchedRequest = selectMostRecentlyActiveRequest(exactMatches);
       return {
-        matchedRequest: exactMatches[exactMatches.length - 1],
+        matchedRequest,
         confidence: 'low',
         ambiguous: true,
         ambiguityReason: 'multiple-http-requests-with-same-method-and-path'
@@ -122,8 +262,122 @@ const resolveHttpCandidate = (context, signal) => {
     };
   }
 
+  if (signal.phase === 'processing') {
+    const controllerMatchedRequests = openRequests.filter(candidate => (
+      controllerMatchesRequestPath(signal.controller, candidate.path)
+    ));
+
+    if (controllerMatchedRequests.length === 1) {
+      return {
+        matchedRequest: controllerMatchedRequests[0],
+        confidence: controllerMatchedRequests[0].confidence,
+        ambiguous: false,
+        ambiguityReason: null
+      };
+    }
+
+    if (controllerMatchedRequests.length > 1) {
+      return {
+        matchedRequest: selectMostRecentlyActiveRequest(controllerMatchedRequests),
+        confidence: 'low',
+        ambiguous: true,
+        ambiguityReason: 'multiple-http-requests-match-controller-path'
+      };
+    }
+
+    const unprocessedRequests = openRequests.filter(candidate => !candidate.controller);
+
+    if (unprocessedRequests.length === 1) {
+      return {
+        matchedRequest: unprocessedRequests[0],
+        confidence: unprocessedRequests[0].confidence,
+        ambiguous: false,
+        ambiguityReason: null
+      };
+    }
+
+    if (unprocessedRequests.length > 1) {
+      return {
+        matchedRequest: selectMostRecentlyActiveRequest(unprocessedRequests),
+        confidence: 'low',
+        ambiguous: true,
+        ambiguityReason: 'multiple-http-requests-awaiting-processing'
+      };
+    }
+  }
+
+  if (signal.phase === 'render') {
+    const renderCandidates = signal.renderKind === 'serializer'
+      ? openRequests.filter(isApiRequest)
+      : openRequests.filter(isViewRequest);
+
+    if (signal.renderKind === 'serializer') {
+      const controllerMatchedCandidates = renderCandidates.filter((candidate) => (
+        renderTargetMatchesRequest(signal.renderTarget, candidate)
+      ));
+
+      if (controllerMatchedCandidates.length === 1) {
+        return {
+          matchedRequest: controllerMatchedCandidates[0],
+          confidence: controllerMatchedCandidates[0].confidence,
+          ambiguous: false,
+          ambiguityReason: null
+        };
+      }
+
+      if (controllerMatchedCandidates.length > 1) {
+        return {
+          matchedRequest: selectMostRecentlyActiveRequest(controllerMatchedCandidates),
+          confidence: 'low',
+          ambiguous: true,
+          ambiguityReason: 'multiple-http-requests-match-render-target'
+        };
+      }
+
+      const priorSerializerCandidates = renderCandidates.filter(candidate => candidate.lastRenderKind === 'serializer');
+
+      if (priorSerializerCandidates.length === 1) {
+        return {
+          matchedRequest: priorSerializerCandidates[0],
+          confidence: priorSerializerCandidates[0].confidence,
+          ambiguous: false,
+          ambiguityReason: null
+        };
+      }
+
+      if (priorSerializerCandidates.length > 1) {
+        return {
+          matchedRequest: selectMostRecentlyActiveRequest(priorSerializerCandidates),
+          confidence: 'low',
+          ambiguous: true,
+          ambiguityReason: 'multiple-http-requests-with-prior-serializer-render'
+        };
+      }
+    }
+
+    if (renderCandidates.length === 1) {
+      return {
+        matchedRequest: renderCandidates[0],
+        confidence: renderCandidates[0].confidence,
+        ambiguous: false,
+        ambiguityReason: null
+      };
+    }
+
+    if (renderCandidates.length > 1) {
+      return {
+        matchedRequest: selectMostRecentlyActiveRequest(renderCandidates),
+        confidence: 'low',
+        ambiguous: true,
+        ambiguityReason: signal.renderKind === 'serializer'
+          ? 'multiple-api-http-requests'
+          : 'multiple-view-http-requests'
+      };
+    }
+  }
+
   return {
-    matchedRequest: openRequests[openRequests.length - 1],
+    matchedRequest: selectMostRecentlyActiveRequest(openRequests),
     confidence: 'low',
     ambiguous: true,
     ambiguityReason: 'multiple-open-http-requests'
@@ -212,8 +466,13 @@ export const parseLogLine = (logLine, options = {}) => {
         groupId: uuid,
         method: httpSignal.method,
         path: httpSignal.path,
-        confidence: 'high'
+        confidence: 'high',
+        startLineNumber: lineNumber,
+        lastMatchedLineNumber: lineNumber,
+        lastSignalPhase: 'start'
       });
+    } else if (httpSignal) {
+      updateOpenHttpRequest(context, uuid, buildHttpRequestPatch(httpSignal, lineNumber));
     }
 
     if (httpSignal?.phase === 'finish') {
@@ -255,7 +514,10 @@ export const parseLogLine = (logLine, options = {}) => {
         groupId,
         method: httpSignal.method,
         path: httpSignal.path,
-        confidence: 'medium'
+        confidence: 'medium',
+        startLineNumber: lineNumber,
+        lastMatchedLineNumber: lineNumber,
+        lastSignalPhase: 'start'
       });
 
       return buildParsedRecord({
@@ -268,12 +530,36 @@ export const parseLogLine = (logLine, options = {}) => {
     }
 
     if (httpSignal.phase === 'summary') {
+      const resolvedCandidate = resolveHttpCandidate(context, httpSignal);
+
+      if (resolvedCandidate.matchedRequest) {
+        updateOpenHttpRequest(
+          context,
+          resolvedCandidate.matchedRequest.groupId,
+          buildHttpRequestPatch(httpSignal, lineNumber)
+        );
+
+        if (isTerminalHttpSignal(httpSignal, content)) {
+          closeOpenHttpRequest(context, resolvedCandidate.matchedRequest.groupId);
+        }
+      }
+
       return buildParsedRecord({
-        groupId: buildSyntheticHttpGroupId(context, lineNumber),
+        groupId: resolvedCandidate.matchedRequest?.groupId ?? buildSyntheticHttpGroupId(context, lineNumber),
         content,
         logInfo,
-        groupingStrategy: 'http-summary-heuristic',
-        groupingConfidence: 'medium'
+        groupingStrategy: resolvedCandidate.matchedRequest
+          ? 'http-context-heuristic'
+          : 'http-summary-heuristic',
+        groupingConfidence: resolvedCandidate.matchedRequest
+          ? resolvedCandidate.confidence
+          : 'medium',
+        groupingAmbiguous: resolvedCandidate.matchedRequest
+          ? resolvedCandidate.ambiguous
+          : false,
+        groupingAmbiguityReason: resolvedCandidate.matchedRequest
+          ? resolvedCandidate.ambiguityReason
+          : null
       });
     }
 
@@ -282,7 +568,15 @@ export const parseLogLine = (logLine, options = {}) => {
       ? resolvedCandidate.matchedRequest.groupId
       : buildSyntheticHttpGroupId(context, lineNumber);
 
-    if (httpSignal.phase === 'finish' && resolvedCandidate.matchedRequest) {
+    if (resolvedCandidate.matchedRequest) {
+      updateOpenHttpRequest(
+        context,
+        resolvedCandidate.matchedRequest.groupId,
+        buildHttpRequestPatch(httpSignal, lineNumber)
+      );
+    }
+
+    if (resolvedCandidate.matchedRequest && isTerminalHttpSignal(httpSignal, content)) {
       closeOpenHttpRequest(context, resolvedCandidate.matchedRequest.groupId);
     }
 

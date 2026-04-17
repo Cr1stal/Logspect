@@ -517,6 +517,117 @@ describe('Log Parser', () => {
         groupingAmbiguityReason: 'multiple-open-http-requests'
       });
     });
+
+    it('attaches serializer rendered lines to the active API request', () => {
+      const context = createParsingContext();
+      const results = [
+        parseLogLine('Started GET "/api/v1/profile/42"', { context, lineNumber: 1, fallbackGrouping: 'line-number' }),
+        parseLogLine('Processing by Api::V1::UsersController#show as JSON', { context, lineNumber: 2, fallbackGrouping: 'line-number' }),
+        parseLogLine('[active_model_serializers] Rendered ActiveModel::Serializer::Null with Hash (0.06ms)', { context, lineNumber: 3, fallbackGrouping: 'line-number' }),
+        parseLogLine('Completed 200 OK in 19ms', { context, lineNumber: 4, fallbackGrouping: 'line-number' })
+      ];
+
+      const groupIds = new Set(results.map(result => result.uuid));
+      expect(groupIds.size).toBe(1);
+      expect(results[2].logInfo.metadata).toMatchObject({
+        requestPhase: 'render',
+        renderKind: 'serializer',
+        groupingStrategy: 'http-context-heuristic'
+      });
+    });
+
+    it('uses the most recently active request when resolving interleaved completion lines', () => {
+      const context = createParsingContext();
+      const lines = [
+        'Started GET "/topics/apple/infos"',
+        'Processing by InfosController#index as HTML',
+        'Started GET "/api/v1/saved_locations"',
+        'Processing by Api::V1::SavedLocationsController#index as HTML',
+        'Parameters: {"language"=>"en"}',
+        'Rendered layout layouts/application_reskin.html.erb (Duration: 549.6ms | GC: 0.0ms)',
+        'Completed 200 OK in 659ms'
+      ];
+
+      const results = lines.map((line, index) => parseLogLine(line, {
+        context,
+        lineNumber: index + 1,
+        fallbackGrouping: 'line-number'
+      }));
+
+      expect(results[0].uuid).toBe('http-1');
+      expect(results[2].uuid).toBe('http-3');
+      expect(results[5].uuid).toBe('http-1');
+      expect(results[6].uuid).toBe('http-1');
+      expect(results[6].logInfo.metadata).toMatchObject({
+        groupingStrategy: 'http-context-heuristic',
+        groupingConfidence: 'low',
+        groupingAmbiguous: true,
+        groupingAmbiguityReason: 'multiple-open-http-requests'
+      });
+    });
+
+    it('matches routing errors back to the started request by method and quoted path', () => {
+      const context = createParsingContext();
+      const results = [
+        parseLogLine('Started GET "/fonts/bootstrap/glyphicons-halflings-regular.woff2"', { context, lineNumber: 1, fallbackGrouping: 'line-number' }),
+        parseLogLine('ActionController::RoutingError (No route matches [GET] "/fonts/bootstrap/glyphicons-halflings-regular.woff2"):', { context, lineNumber: 2, fallbackGrouping: 'line-number' }),
+        parseLogLine('Started GET "/topics/apple"', { context, lineNumber: 3, fallbackGrouping: 'line-number' }),
+        parseLogLine('Rendered layout layouts/application_reskin.html.erb (Duration: 58.0ms | GC: 0.0ms)', { context, lineNumber: 4, fallbackGrouping: 'line-number' })
+      ];
+
+      expect(results[0].uuid).toBe('http-1');
+      expect(results[1].uuid).toBe('http-1');
+      expect(results[2].uuid).toBe('http-3');
+      expect(results[3].uuid).toBe('http-3');
+      expect(results[1].logInfo.metadata).toMatchObject({
+        requestPhase: 'summary',
+        path: '/fonts/bootstrap/glyphicons-halflings-regular.woff2',
+        groupingStrategy: 'http-context-heuristic'
+      });
+    });
+
+    it('matches processing lines to the request whose path fits the controller namespace', () => {
+      const context = createParsingContext();
+      const results = [
+        parseLogLine('Started GET "/api/v2/flowers/afflictions"', { context, lineNumber: 1, fallbackGrouping: 'line-number' }),
+        parseLogLine('Started GET "/api/v1/saved_locations?language=en"', { context, lineNumber: 2, fallbackGrouping: 'line-number' }),
+        parseLogLine('Processing by Api::V2::Flowers::AfflictionsController#index as JSON', { context, lineNumber: 3, fallbackGrouping: 'line-number' }),
+        parseLogLine('Processing by Api::V1::SavedLocationsController#index as HTML', { context, lineNumber: 4, fallbackGrouping: 'line-number' })
+      ];
+
+      expect(results[0].uuid).toBe('http-1');
+      expect(results[1].uuid).toBe('http-2');
+      expect(results[2].uuid).toBe('http-1');
+      expect(results[3].uuid).toBe('http-2');
+      expect(results[2].logInfo.metadata.groupingConfidence).toBe('medium');
+      expect(results[3].logInfo.metadata.groupingConfidence).toBe('medium');
+    });
+
+    it('prefers the request with prior serializer activity when concurrent API requests overlap', () => {
+      const context = createParsingContext();
+      const lines = [
+        'Started GET "/api/v1/topics/244"',
+        'Processing by Api::V1::TopicsController#show as HTML',
+        '[active_model_serializers] Rendered ActiveModel::Serializer::CollectionSerializer with ActiveModelSerializers::Adapter::Json (0.07ms)',
+        'Started GET "/api/v1/profile/95128"',
+        'Processing by Api::V1::UsersController#user_profile as HTML',
+        '[active_model_serializers] Rendered ActiveModel::Serializer::CollectionSerializer with ActiveModelSerializers::Adapter::Json (0.08ms)',
+        '[active_model_serializers] Rendered TopicSerializer with ActiveModelSerializers::Adapter::Json (123.67ms)',
+        'Completed 200 OK in 298ms'
+      ];
+
+      const results = lines.map((line, index) => parseLogLine(line, {
+        context,
+        lineNumber: index + 1,
+        fallbackGrouping: 'line-number'
+      }));
+
+      expect(results[0].uuid).toBe('http-1');
+      expect(results[3].uuid).toBe('http-4');
+      expect(results[5].uuid).toBe('http-1');
+      expect(results[6].uuid).toBe('http-1');
+      expect(results[7].uuid).toBe('http-1');
+    });
   });
 
   describe('Edge Cases and Error Handling', () => {

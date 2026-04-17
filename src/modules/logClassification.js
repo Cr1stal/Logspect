@@ -11,14 +11,20 @@ export const jidRegex = /class=([^\s]+)\s+jid=([a-f0-9]+)/;
 const HTTP_METHOD_PATTERN = '(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)';
 const startedHttpRegex = new RegExp(`^Started\\s+${HTTP_METHOD_PATTERN}\\s+([^\\s]+)`, 'i');
 const inlineHttpRegex = new RegExp(`${HTTP_METHOD_PATTERN}\\s+([^\\s]+)`, 'i');
+const quotedInlineHttpRegex = new RegExp(`${HTTP_METHOD_PATTERN}\\s+\"([^\"]+)\"`, 'i');
+const bracketedQuotedInlineHttpRegex = new RegExp(`\\[${HTTP_METHOD_PATTERN}\\]\\s+\"([^\"]+)\"`, 'i');
 const completedHttpRegex = /^Completed\s+(\d{3})\b.*?\bin\s+(\d+(?:\.\d+)?)ms\b/i;
 const processingHttpRegex = /^Processing by\s+([^\s]+)#([^\s]+)(?:\s+as\s+([^\s]+))?/i;
 const parametersHttpRegex = /^Parameters:\s+/i;
-const renderedHttpRegex = /^(Rendered|Rendering)\s+/i;
+const renderedHttpRegex = /^(?:\[[^\]]+\]\s+)?(Rendered|Rendering)\s+/i;
 const redirectedHttpRegex = /^Redirected to\s+(.+)/i;
 const filterChainHaltedHttpRegex = /^Filter chain halted as\s+/i;
 const sentHttpRegex = /^(Sent file|Sent data)\s+/i;
 const performedHttpRegex = /^Performed\s+/i;
+
+const normalizeHttpPath = (value) => value
+  .replace(/^"+/, '')
+  .replace(/["):\]]+$/g, '');
 
 const extractHttpResultMetrics = (content) => {
   const statusMatch = content.match(/\b(\d{3})\b/);
@@ -36,7 +42,7 @@ export const extractHttpSignal = (content) => {
     return {
       phase: 'start',
       method: startedMatch[1].toUpperCase(),
-      path: startedMatch[2]
+      path: normalizeHttpPath(startedMatch[2])
     };
   }
 
@@ -66,8 +72,13 @@ export const extractHttpSignal = (content) => {
   }
 
   if (renderedHttpRegex.test(content)) {
+    const renderTargetMatch = content.match(/Rendered\s+([^\s]+)\s+/i);
     return {
-      phase: 'render'
+      phase: 'render',
+      renderKind: /\bserializer\b/i.test(content) || /\[active_model_serializers\]/i.test(content)
+        ? 'serializer'
+        : 'view',
+      renderTarget: renderTargetMatch ? renderTargetMatch[1] : null
     };
   }
 
@@ -75,7 +86,7 @@ export const extractHttpSignal = (content) => {
   if (redirectedMatch) {
     return {
       phase: 'redirect',
-      location: redirectedMatch[1]
+      location: normalizeHttpPath(redirectedMatch[1])
     };
   }
 
@@ -97,13 +108,15 @@ export const extractHttpSignal = (content) => {
     };
   }
 
-  const inlineMatch = content.match(inlineHttpRegex);
+  const inlineMatch = content.match(bracketedQuotedInlineHttpRegex)
+    || content.match(quotedInlineHttpRegex)
+    || content.match(inlineHttpRegex);
   if (inlineMatch) {
     const metrics = extractHttpResultMetrics(content);
     return {
       phase: 'summary',
       method: inlineMatch[1].toUpperCase(),
-      path: inlineMatch[2],
+      path: normalizeHttpPath(inlineMatch[2]),
       statusCode: metrics.statusCode,
       responseTime: metrics.responseTime
     };
@@ -168,6 +181,10 @@ const createHttpLogInfo = (signal) => {
   }
 
   if (signal.phase === 'render') {
+    logInfo.metadata.renderKind = signal.renderKind || 'view';
+    if (signal.renderTarget) {
+      logInfo.metadata.renderTarget = signal.renderTarget;
+    }
     logInfo.title = 'Rendered View';
   }
 
