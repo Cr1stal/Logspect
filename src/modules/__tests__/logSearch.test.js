@@ -172,6 +172,51 @@ describe('logSearch', () => {
     expect(finalResults.entries[0].entries.map(entry => entry.isMatch)).toEqual([false, false, true]);
   });
 
+  it('assembles Rails request lifecycle lines without UUID into one HTTP group', async () => {
+    const logFilePath = await createTempLogFile([
+      'Started GET /users',
+      'Processing by UsersController#index as HTML',
+      'Parameters: {"page"=>"1"}',
+      'Completed 200 OK in 12ms'
+    ].join('\n'));
+
+    const { resultsEvents } = await waitForSearchCompletion(logFilePath, 'page');
+    const finalResults = resultsEvents.at(-1);
+
+    expect(finalResults.entries).toHaveLength(1);
+    expect(finalResults.entries[0].uuid).toBe('http-1');
+    expect(finalResults.entries[0].entriesCount).toBe(4);
+    expect(finalResults.entries[0].metadata).toMatchObject({
+      groupingStrategy: 'http-context-heuristic',
+      groupingConfidence: 'medium',
+      requestPhase: 'finish'
+    });
+    expect(finalResults.entries[0].entries.map(entry => entry.lineNumber)).toEqual([1, 2, 3, 4]);
+    expect(finalResults.entries[0].entries[2].evidence).toMatchObject({
+      sourceFileId: expect.stringMatching(/^src_/),
+      rawLineId: expect.stringMatching(/^raw_/),
+      anchorId: expect.stringMatching(/^anc_/),
+      lineNumber: 3
+    });
+
+    const {
+      getLiveRawLine,
+      openLiveAnchor
+    } = await import('../liveEvidenceStore.js');
+    const thirdEntryEvidence = finalResults.entries[0].entries[2].evidence;
+
+    expect(getLiveRawLine(thirdEntryEvidence.rawLineId)).toMatchObject({
+      rawLineId: thirdEntryEvidence.rawLineId,
+      lineNumber: 3,
+      rawText: 'Parameters: {"page"=>"1"}'
+    });
+    expect(openLiveAnchor(thirdEntryEvidence.anchorId)).toMatchObject({
+      anchorId: thirdEntryEvidence.anchorId,
+      rawLineId: thirdEntryEvidence.rawLineId,
+      lineNumber: 3
+    });
+  });
+
   it('falls back to a stream scan when indexed search throws unexpectedly', async () => {
     vi.doMock('../logIndex.js', async () => {
       const actual = await vi.importActual('../logIndex.js');

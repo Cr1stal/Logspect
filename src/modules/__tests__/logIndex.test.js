@@ -62,7 +62,13 @@ describe('logIndex', () => {
 
     await waitForIndexReady(logFilePath, directoryPath);
 
-    const { getIndexedLogViewPage, setLogIndexStorageDirectory } = await import('../logIndex.js');
+    const {
+      getIndexedLogViewPage,
+      getIndexedRawLine,
+      lookupIndexedValue,
+      openIndexedAnchor,
+      setLogIndexStorageDirectory
+    } = await import('../logIndex.js');
     setLogIndexStorageDirectory(directoryPath);
 
     const firstPage = await getIndexedLogViewPage(logFilePath, { limit: 2 });
@@ -90,7 +96,32 @@ describe('logIndex', () => {
       'aa32797f-b087-4d45-9d99-28198952a784'
     ]);
     expect(secondPage.page.entries[0].entries.map(entry => entry.lineNumber)).toEqual([1, 2]);
+    expect(secondPage.page.entries[0].entries[0].evidence).toMatchObject({
+      sourceFileId: expect.stringMatching(/^src_/),
+      rawLineId: expect.stringMatching(/^raw_/),
+      anchorId: expect.stringMatching(/^anc_/),
+      lineNumber: 1,
+      byteStart: 0
+    });
     expect(secondPage.page.hasMore).toBe(false);
+
+    const firstAnchor = secondPage.page.entries[0].entries[0].evidence.anchorId;
+    const firstRawLineId = secondPage.page.entries[0].entries[0].evidence.rawLineId;
+    expect(await getIndexedRawLine(logFilePath, firstRawLineId)).toMatchObject({
+      rawLineId: firstRawLineId,
+      lineNumber: 1,
+      rawText: '[aa32797f-b087-4d45-9d99-28198952a784] INFO: request booted'
+    });
+    expect(await openIndexedAnchor(logFilePath, firstAnchor)).toMatchObject({
+      anchorId: firstAnchor,
+      rawLineId: firstRawLineId,
+      lineNumber: 1
+    });
+    expect(await lookupIndexedValue(
+      logFilePath,
+      'request_id',
+      'aa32797f-b087-4d45-9d99-28198952a784'
+    )).toHaveLength(2);
   });
 
   it('builds a SQLite index and searches it by content', async () => {
@@ -102,7 +133,11 @@ describe('logIndex', () => {
 
     await waitForIndexReady(logFilePath, directoryPath);
 
-    const { searchIndexedLogFile, setLogIndexStorageDirectory } = await import('../logIndex.js');
+    const {
+      lookupIndexedValue,
+      searchIndexedLogFile,
+      setLogIndexStorageDirectory
+    } = await import('../logIndex.js');
     setLogIndexStorageDirectory(directoryPath);
 
     const result = await searchIndexedLogFile(logFilePath, 'cache timeout');
@@ -122,6 +157,22 @@ describe('logIndex', () => {
     });
     expect(result.results.entries[0].entries.map(entry => entry.lineNumber)).toEqual([1, 2]);
     expect(result.results.entries[0].entries.map(entry => entry.isMatch)).toEqual([false, true]);
+    expect(result.results.entries[0].entries[1].evidence).toMatchObject({
+      sourceFileId: expect.stringMatching(/^src_/),
+      rawLineId: expect.stringMatching(/^raw_/),
+      anchorId: expect.stringMatching(/^anc_/),
+      lineNumber: 2
+    });
+    expect(await lookupIndexedValue(
+      logFilePath,
+      'job_id',
+      '73f8e97e7e79413a3006f4ea'
+    )).toMatchObject([
+      expect.objectContaining({
+        lookupKind: 'job_id',
+        lookupValue: '73f8e97e7e79413a3006f4ea'
+      })
+    ]);
   });
 
   it('appends new lines into the existing index on subsequent runs', async () => {
@@ -328,11 +379,15 @@ describe('logIndex', () => {
 
     const {
       getIndexedLogViewPage,
+      getIndexedRawLine,
       startLogIndexing,
       searchIndexedLogFile,
       setLogIndexStorageDirectory
     } = await import('../logIndex.js');
     setLogIndexStorageDirectory(directoryPath);
+
+    const beforeRebuildView = await getIndexedLogViewPage(logFilePath, { limit: 20 });
+    const originalEvidence = beforeRebuildView.page.entries[0].entries[0].evidence;
 
     await startLogIndexing(logFilePath, {
       forceRebuild: true,
@@ -348,9 +403,41 @@ describe('logIndex', () => {
     expect(searchResult.results.entries[0].searchMeta.matchedLineCount).toBe(1);
     expect(searchResult.results.entries[0].entries.map(entry => entry.lineNumber)).toEqual([1, 2, 3]);
     expect(searchResult.results.entries[0].entries.map(entry => entry.isMatch)).toEqual([false, false, true]);
+    expect(await getIndexedRawLine(logFilePath, originalEvidence.rawLineId)).toMatchObject({
+      rawLineId: originalEvidence.rawLineId,
+      lineNumber: 1,
+      rawText: '[aa32797f-b087-4d45-9d99-28198952a784] INFO: request booted'
+    });
 
     expect(viewerResult.success).toBe(true);
     expect(viewerResult.page.entries[0].entriesCount).toBe(3);
     expect(viewerResult.page.entries[0].entries.map(entry => entry.lineNumber)).toEqual([1, 2, 3]);
+    expect(viewerResult.page.entries[0].entries[0].evidence.rawLineId).not.toBe(originalEvidence.rawLineId);
+  });
+
+  it('indexes Rails request lifecycle lines without UUID as one HTTP group', async () => {
+    const { directoryPath, logFilePath } = await createTempLogFile([
+      'Started GET /users',
+      'Processing by UsersController#index as HTML',
+      'Parameters: {"page"=>"1"}',
+      'Completed 200 OK in 12ms'
+    ].join('\n'));
+
+    await waitForIndexReady(logFilePath, directoryPath);
+
+    const { searchIndexedLogFile, setLogIndexStorageDirectory } = await import('../logIndex.js');
+    setLogIndexStorageDirectory(directoryPath);
+
+    const result = await searchIndexedLogFile(logFilePath, 'page');
+
+    expect(result.success).toBe(true);
+    expect(result.results.entries).toHaveLength(1);
+    expect(result.results.entries[0].uuid).toBe('http-1');
+    expect(result.results.entries[0].entriesCount).toBe(4);
+    expect(result.results.entries[0].metadata).toMatchObject({
+      groupingStrategy: 'http-context-heuristic',
+      groupingConfidence: 'medium'
+    });
+    expect(result.results.entries[0].entries.map(entry => entry.lineNumber)).toEqual([1, 2, 3, 4]);
   });
 });

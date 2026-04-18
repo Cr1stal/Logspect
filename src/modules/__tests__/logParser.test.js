@@ -1,18 +1,21 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
+  createParsingContext,
   uuidRegex,
   jidRegex,
   extractLogInfo,
   parseLogLine,
   parseLogLines,
   isValidUuid,
-  isValidJid
+  isValidJid,
+  resetDefaultParsingContext
 } from '../logParser.js';
 
 describe('Log Parser', () => {
   beforeEach(() => {
     // Reset any module-level state between tests
     vi.resetAllMocks();
+    resetDefaultParsingContext();
   });
 
   describe('uuidRegex', () => {
@@ -125,16 +128,53 @@ describe('Log Parser', () => {
         const content = 'GET /dashboard/overview 200 OK 45ms';
         const result = extractLogInfo(content);
 
-        expect(result).toEqual({
+        expect(result).toMatchObject({
           type: 'web',
           subType: 'GET',
           success: true,
           metadata: {
+            method: 'GET',
             path: '/dashboard/overview',
+            requestPhase: 'summary',
             statusCode: 200,
             responseTime: 45
           },
           title: 'GET /dashboard/overview'
+        });
+      });
+
+      it('should classify Rails lifecycle lines as web request evidence', () => {
+        const started = extractLogInfo('Started GET /users');
+        const completed = extractLogInfo('Completed 200 OK in 12ms');
+        const parameters = extractLogInfo('Parameters: {"id"=>"42"}');
+
+        expect(started).toMatchObject({
+          type: 'web',
+          subType: 'GET',
+          title: 'GET /users',
+          metadata: {
+            requestPhase: 'start',
+            path: '/users'
+          }
+        });
+
+        expect(completed).toMatchObject({
+          type: 'web',
+          subType: 'HTTP',
+          success: true,
+          metadata: {
+            requestPhase: 'finish',
+            statusCode: 200,
+            responseTime: 12
+          }
+        });
+
+        expect(parameters).toMatchObject({
+          type: 'web',
+          title: 'Request Parameters',
+          metadata: {
+            requestPhase: 'parameters'
+          }
         });
       });
 
@@ -273,9 +313,16 @@ describe('Log Parser', () => {
       const logLine = 'GET /dashboard 200 OK';
       const result = parseLogLine(logLine);
 
-      expect(result.uuid).toBe(null);
+      expect(result.uuid).toMatch(/^http-live-\d+$/);
       expect(result.content).toBe('GET /dashboard 200 OK');
       expect(result.isNewEntry).toBe(false);
+      expect(result.logInfo).toMatchObject({
+        type: 'web',
+        metadata: {
+          groupingStrategy: 'http-summary-heuristic',
+          groupingConfidence: 'medium'
+        }
+      });
     });
 
     it('should strip VT control characters', () => {
@@ -318,7 +365,7 @@ describe('Log Parser', () => {
       expect(results).toHaveLength(4); // Empty lines filtered out
       expect(results[0].uuid).toBe('aa32797f-b087-4d45-9d99-28198952a784');
       expect(results[1].uuid).toBe('abc123');
-      expect(results[2].uuid).toBe(null);
+      expect(results[2].uuid).toMatch(/^http-live-\d+$/);
       expect(results[3].uuid).toMatch(/^sys-\d+$/);
     });
 
@@ -434,6 +481,152 @@ describe('Log Parser', () => {
 
       // Should have different UUIDs
       expect(line1.uuid).not.toBe(line2.uuid);
+    });
+  });
+
+  describe('HTTP RuntimeWork assembly', () => {
+    it('groups Rails request lifecycle lines into one heuristic HTTP work unit', () => {
+      const context = createParsingContext();
+      const results = [
+        parseLogLine('Started GET /users', { context }),
+        parseLogLine('Processing by UsersController#index as HTML', { context }),
+        parseLogLine('Parameters: {"page"=>"1"}', { context }),
+        parseLogLine('Completed 200 OK in 12ms', { context })
+      ];
+
+      const groupIds = new Set(results.map(result => result.uuid));
+      expect(groupIds.size).toBe(1);
+
+      results.forEach((result) => {
+        expect(result.logInfo.metadata.groupingStrategy).toMatch(/^http-/);
+      });
+    });
+
+    it('marks ambiguous request correlation as low-confidence', () => {
+      const context = createParsingContext();
+      const first = parseLogLine('Started GET /users', { context, lineNumber: 1, fallbackGrouping: 'line-number' });
+      const second = parseLogLine('Started GET /users', { context, lineNumber: 2, fallbackGrouping: 'line-number' });
+      const completed = parseLogLine('Completed 200 OK in 12ms', { context, lineNumber: 3, fallbackGrouping: 'line-number' });
+
+      expect(first.uuid).toBe('http-1');
+      expect(second.uuid).toBe('http-2');
+      expect(completed.uuid).toBe('http-2');
+      expect(completed.logInfo.metadata).toMatchObject({
+        groupingConfidence: 'low',
+        groupingAmbiguous: true,
+        groupingAmbiguityReason: 'multiple-open-http-requests'
+      });
+    });
+
+    it('attaches serializer rendered lines to the active API request', () => {
+      const context = createParsingContext();
+      const results = [
+        parseLogLine('Started GET "/api/v1/profile/42"', { context, lineNumber: 1, fallbackGrouping: 'line-number' }),
+        parseLogLine('Processing by Api::V1::UsersController#show as JSON', { context, lineNumber: 2, fallbackGrouping: 'line-number' }),
+        parseLogLine('[active_model_serializers] Rendered ActiveModel::Serializer::Null with Hash (0.06ms)', { context, lineNumber: 3, fallbackGrouping: 'line-number' }),
+        parseLogLine('Completed 200 OK in 19ms', { context, lineNumber: 4, fallbackGrouping: 'line-number' })
+      ];
+
+      const groupIds = new Set(results.map(result => result.uuid));
+      expect(groupIds.size).toBe(1);
+      expect(results[2].logInfo.metadata).toMatchObject({
+        requestPhase: 'render',
+        renderKind: 'serializer',
+        groupingStrategy: 'http-context-heuristic'
+      });
+    });
+
+    it('uses the most recently active request when resolving interleaved completion lines', () => {
+      const context = createParsingContext();
+      const lines = [
+        'Started GET "/topics/apple/infos"',
+        'Processing by InfosController#index as HTML',
+        'Started GET "/api/v1/saved_locations"',
+        'Processing by Api::V1::SavedLocationsController#index as HTML',
+        'Parameters: {"language"=>"en"}',
+        'Rendered layout layouts/application_reskin.html.erb (Duration: 549.6ms | GC: 0.0ms)',
+        'Completed 200 OK in 659ms'
+      ];
+
+      const results = lines.map((line, index) => parseLogLine(line, {
+        context,
+        lineNumber: index + 1,
+        fallbackGrouping: 'line-number'
+      }));
+
+      expect(results[0].uuid).toBe('http-1');
+      expect(results[2].uuid).toBe('http-3');
+      expect(results[5].uuid).toBe('http-1');
+      expect(results[6].uuid).toBe('http-1');
+      expect(results[6].logInfo.metadata).toMatchObject({
+        groupingStrategy: 'http-context-heuristic',
+        groupingConfidence: 'low',
+        groupingAmbiguous: true,
+        groupingAmbiguityReason: 'multiple-open-http-requests'
+      });
+    });
+
+    it('matches routing errors back to the started request by method and quoted path', () => {
+      const context = createParsingContext();
+      const results = [
+        parseLogLine('Started GET "/fonts/bootstrap/glyphicons-halflings-regular.woff2"', { context, lineNumber: 1, fallbackGrouping: 'line-number' }),
+        parseLogLine('ActionController::RoutingError (No route matches [GET] "/fonts/bootstrap/glyphicons-halflings-regular.woff2"):', { context, lineNumber: 2, fallbackGrouping: 'line-number' }),
+        parseLogLine('Started GET "/topics/apple"', { context, lineNumber: 3, fallbackGrouping: 'line-number' }),
+        parseLogLine('Rendered layout layouts/application_reskin.html.erb (Duration: 58.0ms | GC: 0.0ms)', { context, lineNumber: 4, fallbackGrouping: 'line-number' })
+      ];
+
+      expect(results[0].uuid).toBe('http-1');
+      expect(results[1].uuid).toBe('http-1');
+      expect(results[2].uuid).toBe('http-3');
+      expect(results[3].uuid).toBe('http-3');
+      expect(results[1].logInfo.metadata).toMatchObject({
+        requestPhase: 'summary',
+        path: '/fonts/bootstrap/glyphicons-halflings-regular.woff2',
+        groupingStrategy: 'http-context-heuristic'
+      });
+    });
+
+    it('matches processing lines to the request whose path fits the controller namespace', () => {
+      const context = createParsingContext();
+      const results = [
+        parseLogLine('Started GET "/api/v2/flowers/afflictions"', { context, lineNumber: 1, fallbackGrouping: 'line-number' }),
+        parseLogLine('Started GET "/api/v1/saved_locations?language=en"', { context, lineNumber: 2, fallbackGrouping: 'line-number' }),
+        parseLogLine('Processing by Api::V2::Flowers::AfflictionsController#index as JSON', { context, lineNumber: 3, fallbackGrouping: 'line-number' }),
+        parseLogLine('Processing by Api::V1::SavedLocationsController#index as HTML', { context, lineNumber: 4, fallbackGrouping: 'line-number' })
+      ];
+
+      expect(results[0].uuid).toBe('http-1');
+      expect(results[1].uuid).toBe('http-2');
+      expect(results[2].uuid).toBe('http-1');
+      expect(results[3].uuid).toBe('http-2');
+      expect(results[2].logInfo.metadata.groupingConfidence).toBe('medium');
+      expect(results[3].logInfo.metadata.groupingConfidence).toBe('medium');
+    });
+
+    it('prefers the request with prior serializer activity when concurrent API requests overlap', () => {
+      const context = createParsingContext();
+      const lines = [
+        'Started GET "/api/v1/topics/244"',
+        'Processing by Api::V1::TopicsController#show as HTML',
+        '[active_model_serializers] Rendered ActiveModel::Serializer::CollectionSerializer with ActiveModelSerializers::Adapter::Json (0.07ms)',
+        'Started GET "/api/v1/profile/95128"',
+        'Processing by Api::V1::UsersController#user_profile as HTML',
+        '[active_model_serializers] Rendered ActiveModel::Serializer::CollectionSerializer with ActiveModelSerializers::Adapter::Json (0.08ms)',
+        '[active_model_serializers] Rendered TopicSerializer with ActiveModelSerializers::Adapter::Json (123.67ms)',
+        'Completed 200 OK in 298ms'
+      ];
+
+      const results = lines.map((line, index) => parseLogLine(line, {
+        context,
+        lineNumber: index + 1,
+        fallbackGrouping: 'line-number'
+      }));
+
+      expect(results[0].uuid).toBe('http-1');
+      expect(results[3].uuid).toBe('http-4');
+      expect(results[5].uuid).toBe('http-1');
+      expect(results[6].uuid).toBe('http-1');
+      expect(results[7].uuid).toBe('http-1');
     });
   });
 

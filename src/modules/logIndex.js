@@ -3,12 +3,23 @@ import fs from 'fs';
 import { createRequire } from 'node:module';
 import os from 'os';
 import path from 'path';
-import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import util from 'node:util';
 import { Worker } from 'node:worker_threads';
 import log from 'electron-log';
-import { extractLogInfo, jidRegex, uuidRegex } from './logParser.js';
+import {
+  buildEvidenceRef,
+  createRawLogLineRecord,
+  createRootAnchorRecord,
+  createSourceFileId
+} from './evidenceModel.js';
+import { streamFileLineRecords } from './fileLineStream.js';
+import { buildParseArtifacts } from './parserNormalizer.js';
+import {
+  createParsingContext,
+  mergeLogMetadata,
+  parseLogLine
+} from './logParser.js';
 
 const INDEX_STREAM_HIGH_WATER_MARK = 256 * 1024;
 const INDEX_BATCH_SIZE = 2000;
@@ -116,6 +127,27 @@ const buildWorkerExecArgv = () => (
   process.execArgv.filter(arg => !arg.startsWith('--input-type'))
 );
 
+const loadPackagedSqlite = () => {
+  if (!process.resourcesPath) {
+    return null;
+  }
+
+  const packagedModuleEntry = path.join(
+    process.resourcesPath,
+    'node_modules',
+    'better-sqlite3',
+    'package.json'
+  );
+
+  if (!fs.existsSync(packagedModuleEntry)) {
+    return null;
+  }
+
+  const packagedRequire = createRequire(packagedModuleEntry);
+  const loadedModule = packagedRequire('./lib/index.js');
+  return loadedModule.default || loadedModule;
+};
+
 const loadSqlite = () => {
   if (sqliteSupported === false) {
     return null;
@@ -131,6 +163,18 @@ const loadSqlite = () => {
     sqliteSupported = true;
     return BetterSqlite3;
   } catch (error) {
+    try {
+      const loadedModule = loadPackagedSqlite();
+
+      if (loadedModule) {
+        BetterSqlite3 = loadedModule;
+        sqliteSupported = true;
+        return BetterSqlite3;
+      }
+    } catch (packagedError) {
+      log.warn?.('Packaged better-sqlite3 fallback failed:', packagedError);
+    }
+
     sqliteSupported = false;
     log.warn?.('better-sqlite3 is not available in this runtime:', error);
     return null;
@@ -150,6 +194,10 @@ const getIndexDatabasePath = async (logFilePath) => {
   return path.join(indexStorageDirectory, `${buildFileKey(logFilePath)}.sqlite`);
 };
 
+const hasColumn = (db, tableName, columnName) => Boolean(
+  db.prepare(`PRAGMA table_info(${tableName})`).all().find((column) => column.name === columnName)
+);
+
 const hasTable = (db, tableName) => Boolean(
   db.prepare(`
     SELECT 1
@@ -164,6 +212,164 @@ const supportsFts5 = (db) => Boolean(
     SELECT sqlite_compileoption_used('ENABLE_FTS5') AS enabled
   `).get().enabled
 );
+
+const ensureEvidenceSchema = (db) => {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS source_files (
+      source_file_id TEXT PRIMARY KEY,
+      corpus_id TEXT NOT NULL,
+      path TEXT NOT NULL,
+      content_hash TEXT,
+      encoding TEXT NOT NULL,
+      line_count INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS raw_log_lines (
+      raw_line_id TEXT PRIMARY KEY,
+      append_seq INTEGER NOT NULL UNIQUE,
+      source_file_id TEXT NOT NULL,
+      line_number INTEGER NOT NULL,
+      byte_start INTEGER NOT NULL,
+      byte_end INTEGER NOT NULL,
+      raw_text TEXT NOT NULL,
+      ingested_at_utc TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS anchors (
+      anchor_id TEXT PRIMARY KEY,
+      raw_line_id TEXT NOT NULL,
+      source_file_id TEXT NOT NULL,
+      line_number INTEGER NOT NULL,
+      byte_start INTEGER NOT NULL,
+      byte_end INTEGER NOT NULL,
+      field_path TEXT NOT NULL,
+      anchor_kind TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_raw_log_lines_source_line
+      ON raw_log_lines(source_file_id, line_number);
+    CREATE INDEX IF NOT EXISTS idx_anchors_raw_line_id
+      ON anchors(raw_line_id);
+    CREATE INDEX IF NOT EXISTS idx_anchors_source_line
+      ON anchors(source_file_id, line_number);
+
+    CREATE TABLE IF NOT EXISTS parse_records (
+      parse_record_id TEXT PRIMARY KEY,
+      raw_line_id TEXT NOT NULL,
+      parse_status TEXT NOT NULL,
+      parser_version TEXT NOT NULL,
+      root_anchor_id TEXT NOT NULL,
+      field_anchor_map_json TEXT NOT NULL,
+      format_class TEXT NOT NULL,
+      raw_text TEXT NOT NULL,
+      query_terms_json TEXT NOT NULL,
+      fields_json TEXT NOT NULL,
+      normalized_timestamp_utc TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_parse_records_raw_line
+      ON parse_records(raw_line_id);
+    CREATE INDEX IF NOT EXISTS idx_parse_records_status
+      ON parse_records(parse_status);
+
+    CREATE TABLE IF NOT EXISTS timestamp_normalization_records (
+      normalization_record_id TEXT PRIMARY KEY,
+      raw_line_id TEXT NOT NULL,
+      source_value TEXT NOT NULL,
+      normalized_value_utc TEXT NOT NULL,
+      timezone_source TEXT NOT NULL,
+      supporting_anchor_id TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_timestamp_normalization_raw_line
+      ON timestamp_normalization_records(raw_line_id);
+    CREATE INDEX IF NOT EXISTS idx_timestamp_normalization_value
+      ON timestamp_normalization_records(normalized_value_utc);
+
+    CREATE TABLE IF NOT EXISTS lookup_index (
+      lookup_index_id TEXT PRIMARY KEY,
+      lookup_kind TEXT NOT NULL,
+      lookup_value TEXT NOT NULL,
+      raw_line_id TEXT NOT NULL,
+      anchor_id TEXT NOT NULL,
+      append_seq INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_lookup_index_kind_value_append
+      ON lookup_index(lookup_kind, lookup_value, append_seq);
+    CREATE INDEX IF NOT EXISTS idx_lookup_index_anchor
+      ON lookup_index(anchor_id);
+  `);
+
+  if (!hasColumn(db, 'log_lines', 'source_file_id')) {
+    db.exec(`ALTER TABLE log_lines ADD COLUMN source_file_id TEXT;`);
+  }
+
+  if (!hasColumn(db, 'log_lines', 'raw_line_id')) {
+    db.exec(`ALTER TABLE log_lines ADD COLUMN raw_line_id TEXT;`);
+  }
+
+  if (!hasColumn(db, 'log_lines', 'root_anchor_id')) {
+    db.exec(`ALTER TABLE log_lines ADD COLUMN root_anchor_id TEXT;`);
+  }
+
+  if (!hasColumn(db, 'log_lines', 'byte_start')) {
+    db.exec(`ALTER TABLE log_lines ADD COLUMN byte_start INTEGER;`);
+  }
+
+  if (!hasColumn(db, 'log_lines', 'byte_end')) {
+    db.exec(`ALTER TABLE log_lines ADD COLUMN byte_end INTEGER;`);
+  }
+};
+
+const hasEvidenceCoverage = (db) => {
+  if (
+    !hasTable(db, 'raw_log_lines')
+    || !hasTable(db, 'anchors')
+    || !hasTable(db, 'source_files')
+    || !hasTable(db, 'parse_records')
+    || !hasTable(db, 'timestamp_normalization_records')
+    || !hasTable(db, 'lookup_index')
+  ) {
+    return false;
+  }
+
+  if (!hasColumn(db, 'log_lines', 'raw_line_id') || !hasColumn(db, 'log_lines', 'root_anchor_id')) {
+    return false;
+  }
+
+  if (!hasIndexedRows(db)) {
+    return true;
+  }
+
+  const evidenceCoverage = db.prepare(`
+    SELECT
+      EXISTS(
+        SELECT 1
+        FROM log_lines
+        WHERE raw_line_id IS NOT NULL
+          AND root_anchor_id IS NOT NULL
+          AND source_file_id IS NOT NULL
+        LIMIT 1
+      ) AS has_line_evidence,
+      EXISTS(
+        SELECT 1
+        FROM parse_records
+        LIMIT 1
+      ) AS has_parse_records,
+      EXISTS(
+        SELECT 1
+        FROM lookup_index
+        LIMIT 1
+      ) AS has_lookup_index
+  `).get();
+
+  return Boolean(
+    evidenceCoverage?.has_line_evidence
+    && evidenceCoverage?.has_parse_records
+    && evidenceCoverage?.has_lookup_index
+  );
+};
 
 const openDatabase = async (dbPath) => {
   const SQLiteDatabase = loadSqlite();
@@ -208,6 +414,7 @@ const openDatabase = async (dbPath) => {
       entries_count INTEGER NOT NULL
     );
   `);
+  ensureEvidenceSchema(db);
   ensureLogLineIndexes(db);
   ensureLogGroupIndexes(db);
   ensureLogGroupsBackfilled(db);
@@ -224,6 +431,28 @@ const openDatabase = async (dbPath) => {
     db,
     supportsFts
   };
+};
+
+const getHighestAppendSeq = (db) => (
+  db.prepare(`
+    SELECT COALESCE(MAX(append_seq), 0) AS appendSeq
+    FROM raw_log_lines
+  `).get().appendSeq
+);
+
+const computeFileContentHash = async (logFilePath) => {
+  const hash = crypto.createHash('sha256');
+  const stream = fs.createReadStream(logFilePath);
+
+  try {
+    for await (const chunk of stream) {
+      hash.update(chunk);
+    }
+  } finally {
+    stream.destroy();
+  }
+
+  return hash.digest('hex');
 };
 
 const getPersistedIndexState = (db) => (
@@ -280,7 +509,7 @@ const saveIndexState = (db, {
   );
 };
 
-const clearExistingIndexData = (db) => {
+const clearDerivedIndexData = (db) => {
   db.exec('DELETE FROM log_lines;');
   db.exec('DELETE FROM log_groups;');
 
@@ -417,59 +646,66 @@ const buildIndexedCoverageState = (persistedState, stats) => {
   };
 };
 
-const createIndexRecord = (rawLine, lineNumber) => {
-  const sanitizedLine = util.stripVTControlCharacters(rawLine).trim();
-  if (!sanitizedLine) {
+const createIndexRecord = (lineRecord, sourceFileId, appendSeq, context) => {
+  const parsed = parseLogLine(lineRecord.rawText, {
+    context,
+    lineNumber: lineRecord.lineNumber,
+    fallbackGrouping: 'line-number'
+  });
+
+  if (!parsed?.uuid || !parsed.logInfo) {
     return null;
   }
 
-  const uuidMatch = sanitizedLine.match(uuidRegex);
-  if (uuidMatch) {
-    const content = sanitizedLine.replace(uuidRegex, '').trim();
-    const logInfo = extractLogInfo(content);
-
-    return {
-      lineNumber,
-      groupId: uuidMatch[1],
-      content,
-      type: logInfo.type || 'unknown',
-      subType: logInfo.subType || 'unknown',
-      success: logInfo.success,
-      title: logInfo.title || 'Search Match',
-      metadataJson: JSON.stringify(logInfo.metadata || {}),
-      metadataText: Object.values(logInfo.metadata || {}).join(' ')
-    };
-  }
-
-  const jidMatch = sanitizedLine.match(jidRegex);
-  if (jidMatch) {
-    const logInfo = extractLogInfo(sanitizedLine);
-
-    return {
-      lineNumber,
-      groupId: jidMatch[2],
-      content: sanitizedLine,
-      type: logInfo.type || 'unknown',
-      subType: logInfo.subType || 'unknown',
-      success: logInfo.success,
-      title: logInfo.title || 'Search Match',
-      metadataJson: JSON.stringify(logInfo.metadata || {}),
-      metadataText: Object.values(logInfo.metadata || {}).join(' ')
-    };
-  }
-
-  const logInfo = extractLogInfo(sanitizedLine);
+  const rawLogLine = createRawLogLineRecord({
+    sourceFileId,
+    lineNumber: lineRecord.lineNumber,
+    byteStart: lineRecord.byteStart,
+    byteEnd: lineRecord.byteEnd,
+    rawText: util.stripVTControlCharacters(lineRecord.rawText),
+    ingestedAtUtc: new Date().toISOString(),
+    appendSeq
+  });
+  const rootAnchor = createRootAnchorRecord({
+    rawLineId: rawLogLine.rawLineId,
+    sourceFileId,
+    lineNumber: lineRecord.lineNumber,
+    byteStart: lineRecord.byteStart,
+    byteEnd: lineRecord.byteEnd
+  });
+  const parseArtifacts = buildParseArtifacts({
+    rawLogLine,
+    rootAnchor,
+    runtimeRecord: {
+      requestId: /^[a-f0-9-]{36}$/i.test(parsed.uuid || '') ? parsed.uuid : null,
+      jobId: parsed.logInfo?.metadata?.jid || null,
+      logger: parsed.logInfo?.metadata?.logger || null,
+      sourceTag: parsed.logInfo?.metadata?.sourceTag || parsed.logInfo?.type || null,
+      type: parsed.logInfo?.type || null
+    }
+  });
 
   return {
-    lineNumber,
-    groupId: `line-${lineNumber}`,
-    content: sanitizedLine,
-    type: logInfo.type || 'unknown',
-    subType: logInfo.subType || 'unknown',
-    success: logInfo.success,
-    title: logInfo.title || 'Search Match',
-    metadataJson: JSON.stringify(logInfo.metadata || {}),
-    metadataText: Object.values(logInfo.metadata || {}).join(' ')
+    lineNumber: lineRecord.lineNumber,
+    groupId: parsed.uuid,
+    content: util.stripVTControlCharacters(parsed.content).trim(),
+    type: parsed.logInfo.type || 'unknown',
+    subType: parsed.logInfo.subType || 'unknown',
+    success: parsed.logInfo.success,
+    title: parsed.logInfo.title || 'Search Match',
+    metadataJson: JSON.stringify(parsed.logInfo.metadata || {}),
+    metadataText: Object.values(parsed.logInfo.metadata || {}).join(' '),
+    sourceFileId,
+    rawLineId: rawLogLine.rawLineId,
+    rootAnchorId: rootAnchor.anchorId,
+    byteStart: lineRecord.byteStart,
+    byteEnd: lineRecord.byteEnd,
+    rawLogLine,
+    rootAnchor,
+    parseRecord: parseArtifacts.parseRecord,
+    fieldAnchors: parseArtifacts.fieldAnchors,
+    timestampNormalizationRecord: parseArtifacts.timestampNormalizationRecord,
+    lookupRecords: parseArtifacts.lookupRecords
   };
 };
 
@@ -549,6 +785,14 @@ const determineIndexMode = (persistedState, stats, logFilePath, forceRebuild, { 
     };
   }
 
+  if (!hasEvidenceCoverage(db)) {
+    return {
+      mode: 'rebuild',
+      indexedBytes: 0,
+      indexedLineCount: 0
+    };
+  }
+
   if (stats.size === persistedState.indexedBytes && persistedState.status === 'ready') {
     return {
       mode: 'ready',
@@ -564,7 +808,19 @@ const determineIndexMode = (persistedState, stats, logFilePath, forceRebuild, { 
   };
 };
 
-const flushBatch = (db, batch, insertLineStatement, insertFtsStatement, upsertGroupStatement) => {
+const flushBatch = (
+  db,
+  batch,
+  insertSourceFileStatement,
+  insertRawLineStatement,
+  insertAnchorStatement,
+  insertParseRecordStatement,
+  insertTimestampNormalizationStatement,
+  insertLookupIndexStatement,
+  insertLineStatement,
+  insertFtsStatement,
+  upsertGroupStatement
+) => {
   if (batch.length === 0) {
     return;
   }
@@ -573,6 +829,86 @@ const flushBatch = (db, batch, insertLineStatement, insertFtsStatement, upsertGr
     const insertedGroups = new Map();
 
     batch.forEach((record) => {
+      insertSourceFileStatement.run(
+        record.sourceFile.sourceFileId,
+        record.sourceFile.corpusId,
+        record.sourceFile.path,
+        record.sourceFile.contentHash,
+        record.sourceFile.encoding,
+        record.sourceFile.lineCount
+      );
+
+      insertRawLineStatement.run(
+        record.rawLogLine.rawLineId,
+        record.rawLogLine.appendSeq,
+        record.rawLogLine.sourceFileId,
+        record.rawLogLine.lineNumber,
+        record.rawLogLine.byteStart,
+        record.rawLogLine.byteEnd,
+        record.rawLogLine.rawText,
+        record.rawLogLine.ingestedAtUtc
+      );
+
+      insertAnchorStatement.run(
+        record.rootAnchor.anchorId,
+        record.rootAnchor.rawLineId,
+        record.rootAnchor.sourceFileId,
+        record.rootAnchor.lineNumber,
+        record.rootAnchor.byteStart,
+        record.rootAnchor.byteEnd,
+        record.rootAnchor.fieldPath,
+        record.rootAnchor.anchorKind
+      );
+
+      record.fieldAnchors.forEach((fieldAnchor) => {
+        insertAnchorStatement.run(
+          fieldAnchor.anchorId,
+          fieldAnchor.rawLineId,
+          fieldAnchor.sourceFileId,
+          fieldAnchor.lineNumber,
+          fieldAnchor.byteStart,
+          fieldAnchor.byteEnd,
+          fieldAnchor.fieldPath,
+          fieldAnchor.anchorKind
+        );
+      });
+
+      insertParseRecordStatement.run(
+        record.parseRecord.parseRecordId,
+        record.parseRecord.rawLineId,
+        record.parseRecord.parseStatus,
+        record.parseRecord.parserVersion,
+        record.parseRecord.rootAnchorId,
+        JSON.stringify(record.parseRecord.fieldAnchorMap || {}),
+        record.parseRecord.formatClass,
+        record.parseRecord.rawText,
+        JSON.stringify(record.parseRecord.queryTerms || []),
+        JSON.stringify(record.parseRecord.fields || {}),
+        record.parseRecord.normalizedTimestampUtc
+      );
+
+      if (record.timestampNormalizationRecord) {
+        insertTimestampNormalizationStatement.run(
+          record.timestampNormalizationRecord.normalizationRecordId,
+          record.timestampNormalizationRecord.rawLineId,
+          record.timestampNormalizationRecord.sourceValue,
+          record.timestampNormalizationRecord.normalizedValueUtc,
+          record.timestampNormalizationRecord.timezoneSource,
+          record.timestampNormalizationRecord.supportingAnchorId
+        );
+      }
+
+      record.lookupRecords.forEach((lookupRecord) => {
+        insertLookupIndexStatement.run(
+          lookupRecord.lookupIndexId,
+          lookupRecord.lookupKind,
+          lookupRecord.lookupValue,
+          lookupRecord.rawLineId,
+          lookupRecord.anchorId,
+          lookupRecord.appendSeq
+        );
+      });
+
       const result = insertLineStatement.run(
         record.lineNumber,
         record.groupId,
@@ -583,6 +919,11 @@ const flushBatch = (db, batch, insertLineStatement, insertFtsStatement, upsertGr
         record.content,
         record.metadataJson,
         record.metadataText,
+        record.sourceFileId,
+        record.rawLineId,
+        record.rootAnchorId,
+        record.byteStart,
+        record.byteEnd,
         record.lineNumber
       );
 
@@ -773,8 +1114,103 @@ export const runLogIndexTask = async (
   const shouldOptimizeRebuild = mode === 'rebuild';
   const startByte = mode === 'append' ? baselineState.indexedBytes : 0;
   let indexedLineCount = mode === 'append' ? baselineState.indexedLineCount : 0;
+  let nextAppendSeq = getHighestAppendSeq(db);
   let lastProgressEmitAt = 0;
   let bytesIndexed = startByte;
+  const parsingContext = createParsingContext();
+  const snapshotKey = `indexed:${statsSnapshot.mtimeMs}:${statsSnapshot.size}:${Date.now()}`;
+  const sourceFile = {
+    sourceFileId: createSourceFileId({
+      path: resolvedLogFilePath,
+      snapshotKey
+    }),
+    corpusId: 'indexed',
+    path: resolvedLogFilePath,
+    contentHash: null,
+    encoding: 'utf8',
+    lineCount: indexedLineCount
+  };
+
+  const insertSourceFileStatement = db.prepare(`
+    INSERT INTO source_files (
+      source_file_id,
+      corpus_id,
+      path,
+      content_hash,
+      encoding,
+      line_count
+    ) VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(source_file_id) DO UPDATE SET
+      corpus_id = excluded.corpus_id,
+      path = excluded.path,
+      content_hash = COALESCE(excluded.content_hash, source_files.content_hash),
+      encoding = excluded.encoding,
+      line_count = MAX(source_files.line_count, excluded.line_count)
+  `);
+  const insertRawLineStatement = db.prepare(`
+    INSERT INTO raw_log_lines (
+      raw_line_id,
+      append_seq,
+      source_file_id,
+      line_number,
+      byte_start,
+      byte_end,
+      raw_text,
+      ingested_at_utc
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(raw_line_id) DO NOTHING
+  `);
+  const insertAnchorStatement = db.prepare(`
+    INSERT INTO anchors (
+      anchor_id,
+      raw_line_id,
+      source_file_id,
+      line_number,
+      byte_start,
+      byte_end,
+      field_path,
+      anchor_kind
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(anchor_id) DO NOTHING
+  `);
+  const insertParseRecordStatement = db.prepare(`
+    INSERT INTO parse_records (
+      parse_record_id,
+      raw_line_id,
+      parse_status,
+      parser_version,
+      root_anchor_id,
+      field_anchor_map_json,
+      format_class,
+      raw_text,
+      query_terms_json,
+      fields_json,
+      normalized_timestamp_utc
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(parse_record_id) DO NOTHING
+  `);
+  const insertTimestampNormalizationStatement = db.prepare(`
+    INSERT INTO timestamp_normalization_records (
+      normalization_record_id,
+      raw_line_id,
+      source_value,
+      normalized_value_utc,
+      timezone_source,
+      supporting_anchor_id
+    ) VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(normalization_record_id) DO NOTHING
+  `);
+  const insertLookupIndexStatement = db.prepare(`
+    INSERT INTO lookup_index (
+      lookup_index_id,
+      lookup_kind,
+      lookup_value,
+      raw_line_id,
+      anchor_id,
+      append_seq
+    ) VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(lookup_index_id) DO NOTHING
+  `);
 
   const insertLineStatement = db.prepare(`
     INSERT INTO log_lines (
@@ -786,9 +1222,14 @@ export const runLogIndexTask = async (
       title,
       content,
       metadata_json,
-      metadata_text
+      metadata_text,
+      source_file_id,
+      raw_line_id,
+      root_anchor_id,
+      byte_start,
+      byte_end
     )
-    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
     WHERE NOT EXISTS (
       SELECT 1
       FROM log_lines
@@ -823,7 +1264,7 @@ export const runLogIndexTask = async (
   try {
     if (mode === 'rebuild') {
       dropLogLineIndexes(db);
-      clearExistingIndexData(db);
+      clearDerivedIndexData(db);
       resetFtsTable(db, supportsFts);
       saveIndexState(db, {
         logFilePath: resolvedLogFilePath,
@@ -870,50 +1311,46 @@ export const runLogIndexTask = async (
       };
     }
 
-    const stream = fs.createReadStream(logFilePath, {
-      start: startByte,
-      end: statsSnapshot.size - 1,
-      encoding: 'utf8',
-      highWaterMark: INDEX_STREAM_HIGH_WATER_MARK
-    });
-
-    stream.on('data', (chunk) => {
-      bytesIndexed += Buffer.byteLength(chunk, 'utf8');
-    });
-
-    const lineReader = readline.createInterface({
-      input: stream,
-      crlfDelay: Infinity
-    });
-
     const batch = [];
 
     try {
-      let shouldSkipLeadingBoundaryLine = mode === 'append' && startByte > 0;
-
-      for await (const rawLine of lineReader) {
+      for await (const lineRecord of streamFileLineRecords(logFilePath, {
+        startByte,
+        endByte: statsSnapshot.size - 1,
+        encoding: 'utf8',
+        highWaterMark: INDEX_STREAM_HIGH_WATER_MARK,
+        startLineNumber: indexedLineCount + 1,
+        skipLeadingPartialLine: mode === 'append' && startByte > 0
+      })) {
         if (isCancelled()) {
-          lineReader.close();
-          stream.destroy();
           break;
         }
 
-        if (shouldSkipLeadingBoundaryLine) {
-          shouldSkipLeadingBoundaryLine = false;
-          if (rawLine === '') {
-            continue;
-          }
-        }
-
-        indexedLineCount += 1;
-        const record = createIndexRecord(rawLine, indexedLineCount);
+        indexedLineCount = lineRecord.lineNumber;
+        sourceFile.lineCount = Math.max(sourceFile.lineCount, indexedLineCount);
+        bytesIndexed = Math.max(bytesIndexed, lineRecord.byteEnd);
+        nextAppendSeq += 1;
+        const record = createIndexRecord(lineRecord, sourceFile.sourceFileId, nextAppendSeq, parsingContext);
 
         if (record) {
+          record.sourceFile = { ...sourceFile };
           batch.push(record);
         }
 
         if (batch.length >= INDEX_BATCH_SIZE) {
-          flushBatch(db, batch, insertLineStatement, insertFtsStatement, upsertGroupStatement);
+          flushBatch(
+            db,
+            batch,
+            insertSourceFileStatement,
+            insertRawLineStatement,
+            insertAnchorStatement,
+            insertParseRecordStatement,
+            insertTimestampNormalizationStatement,
+            insertLookupIndexStatement,
+            insertLineStatement,
+            insertFtsStatement,
+            upsertGroupStatement
+          );
         }
 
         if (indexedLineCount % INDEX_YIELD_EVERY_N_LINES === 0) {
@@ -934,10 +1371,21 @@ export const runLogIndexTask = async (
         }
       }
 
-      flushBatch(db, batch, insertLineStatement, insertFtsStatement, upsertGroupStatement);
+      flushBatch(
+        db,
+        batch,
+        insertSourceFileStatement,
+        insertRawLineStatement,
+        insertAnchorStatement,
+        insertParseRecordStatement,
+        insertTimestampNormalizationStatement,
+        insertLookupIndexStatement,
+        insertLineStatement,
+        insertFtsStatement,
+        upsertGroupStatement
+      );
     } finally {
-      lineReader.close();
-      stream.destroy();
+      bytesIndexed = Math.max(bytesIndexed, statsSnapshot.size === 0 ? 0 : Math.min(statsSnapshot.size, bytesIndexed));
     }
 
     if (isCancelled()) {
@@ -962,6 +1410,16 @@ export const runLogIndexTask = async (
       backfillFtsTableFromLogLines(db, supportsFts);
       ensureLogLineIndexes(db);
     }
+
+    sourceFile.contentHash = await computeFileContentHash(logFilePath);
+    insertSourceFileStatement.run(
+      sourceFile.sourceFileId,
+      sourceFile.corpusId,
+      sourceFile.path,
+      sourceFile.contentHash,
+      sourceFile.encoding,
+      sourceFile.lineCount
+    );
 
     saveIndexState(db, {
       logFilePath: resolvedLogFilePath,
@@ -1359,10 +1817,7 @@ const buildIndexedResults = (
       group.success = Boolean(row.success);
     }
     if (row.metadataJson) {
-      group.metadata = {
-        ...group.metadata,
-        ...JSON.parse(row.metadataJson)
-      };
+      group.metadata = mergeLogMetadata(group.metadata, JSON.parse(row.metadataJson));
     }
     group.searchMeta.groupFirstLineNumber = Math.min(group.searchMeta.groupFirstLineNumber, row.lineNumber);
     group.searchMeta.groupLastLineNumber = Math.max(group.searchMeta.groupLastLineNumber, row.lineNumber);
@@ -1370,7 +1825,15 @@ const buildIndexedResults = (
       content: row.content,
       timestamp: DISK_SEARCH_TIMESTAMP,
       lineNumber: row.lineNumber,
-      isMatch: matchedGroup.matchedLineNumbers.includes(row.lineNumber)
+      isMatch: matchedGroup.matchedLineNumbers.includes(row.lineNumber),
+      evidence: buildEvidenceRef({
+        sourceFileId: row.sourceFileId,
+        rawLineId: row.rawLineId,
+        anchorId: row.rootAnchorId,
+        lineNumber: row.lineNumber,
+        byteStart: row.byteStart,
+        byteEnd: row.byteEnd
+      })
     });
   });
 
@@ -1406,7 +1869,12 @@ const fetchIndexedGroupRows = (db, groupIds) => {
       success,
       title,
       content,
-      metadata_json AS metadataJson
+      metadata_json AS metadataJson,
+      source_file_id AS sourceFileId,
+      raw_line_id AS rawLineId,
+      root_anchor_id AS rootAnchorId,
+      byte_start AS byteStart,
+      byte_end AS byteEnd
     FROM log_lines
     WHERE group_id IN (${placeholders})
     ORDER BY line_number ASC
@@ -1486,16 +1954,21 @@ const buildIndexedViewGroups = (groupRows, groupPage) => {
     }
 
     if (row.metadataJson) {
-      group.metadata = {
-        ...group.metadata,
-        ...JSON.parse(row.metadataJson)
-      };
+      group.metadata = mergeLogMetadata(group.metadata, JSON.parse(row.metadataJson));
     }
 
     group.entries.push({
       content: row.content,
       timestamp: DISK_SEARCH_TIMESTAMP,
-      lineNumber: row.lineNumber
+      lineNumber: row.lineNumber,
+      evidence: buildEvidenceRef({
+        sourceFileId: row.sourceFileId,
+        rawLineId: row.rawLineId,
+        anchorId: row.rootAnchorId,
+        lineNumber: row.lineNumber,
+        byteStart: row.byteStart,
+        byteEnd: row.byteEnd
+      })
     });
   });
 
@@ -1722,6 +2195,88 @@ export const getIndexedLogViewPage = async (
       },
       ...buildIndexedCoverageState(persistedState, stats)
     };
+  } finally {
+    db.close();
+  }
+};
+
+export const getIndexedRawLine = async (logFilePath, rawLineId) => {
+  const dbPath = await getIndexDatabasePath(logFilePath);
+  const database = await openDatabase(dbPath);
+  if (!database) {
+    return null;
+  }
+
+  const { db } = database;
+  try {
+    return db.prepare(`
+      SELECT
+        raw_line_id AS rawLineId,
+        append_seq AS appendSeq,
+        source_file_id AS sourceFileId,
+        line_number AS lineNumber,
+        byte_start AS byteStart,
+        byte_end AS byteEnd,
+        raw_text AS rawText,
+        ingested_at_utc AS ingestedAtUtc
+      FROM raw_log_lines
+      WHERE raw_line_id = ?
+      LIMIT 1
+    `).get(rawLineId) || null;
+  } finally {
+    db.close();
+  }
+};
+
+export const openIndexedAnchor = async (logFilePath, anchorId) => {
+  const dbPath = await getIndexDatabasePath(logFilePath);
+  const database = await openDatabase(dbPath);
+  if (!database) {
+    return null;
+  }
+
+  const { db } = database;
+  try {
+    return db.prepare(`
+      SELECT
+        anchor_id AS anchorId,
+        source_file_id AS sourceFileId,
+        line_number AS lineNumber,
+        byte_start AS byteStart,
+        byte_end AS byteEnd,
+        field_path AS fieldPath,
+        anchor_kind AS anchorKind,
+        raw_line_id AS rawLineId
+      FROM anchors
+      WHERE anchor_id = ?
+      LIMIT 1
+    `).get(anchorId) || null;
+  } finally {
+    db.close();
+  }
+};
+
+export const lookupIndexedValue = async (logFilePath, lookupKind, lookupValue) => {
+  const dbPath = await getIndexDatabasePath(logFilePath);
+  const database = await openDatabase(dbPath);
+  if (!database) {
+    return [];
+  }
+
+  const { db } = database;
+  try {
+    return db.prepare(`
+      SELECT
+        lookup_kind AS lookupKind,
+        lookup_value AS lookupValue,
+        raw_line_id AS rawLineId,
+        anchor_id AS anchorId,
+        append_seq AS appendSeq
+      FROM lookup_index
+      WHERE lookup_kind = ?
+        AND lookup_value = ?
+      ORDER BY append_seq ASC
+    `).all(lookupKind, String(lookupValue));
   } finally {
     db.close();
   }
