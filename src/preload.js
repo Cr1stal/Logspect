@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getLogViewPage: (options) => ipcRenderer.invoke('get-log-view-page', options),
   getLogRawLine: (rawLineId) => ipcRenderer.invoke('get-log-raw-line', rawLineId),
   openLogAnchor: (anchorId) => ipcRenderer.invoke('open-log-anchor', anchorId),
+  lookupLogEvidence: (lookupKind, lookupValue) => ipcRenderer.invoke('lookup-log-evidence', lookupKind, lookupValue),
   startLogSearch: (query) => ipcRenderer.invoke('start-log-search', query),
   cancelLogSearch: () => ipcRenderer.invoke('cancel-log-search'),
   onProjectSelected: (callback) => {

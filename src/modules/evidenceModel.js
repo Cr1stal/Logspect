@@ -96,6 +96,107 @@ export const createRootAnchorRecord = ({
   anchorKind
 });
 
+export const byteOffsetForCharacterIndex = (
+  text,
+  characterIndex,
+  encoding = 'utf8'
+) => Buffer.byteLength(text.slice(0, Math.max(0, characterIndex)), encoding);
+
+export const createFieldAnchorRecord = ({
+  rawLineId,
+  sourceFileId,
+  lineNumber,
+  lineByteStart,
+  rawText,
+  fieldPath,
+  charStart = 0,
+  charEnd = rawText.length,
+  anchorKind = 'field'
+}) => {
+  const startOffset = byteOffsetForCharacterIndex(rawText, charStart);
+  const endOffset = byteOffsetForCharacterIndex(rawText, charEnd);
+
+  return {
+    anchorId: createAnchorId({
+      rawLineId,
+      fieldPath,
+      anchorKind
+    }),
+    rawLineId,
+    sourceFileId,
+    lineNumber,
+    byteStart: lineByteStart + startOffset,
+    byteEnd: lineByteStart + endOffset,
+    fieldPath,
+    anchorKind
+  };
+};
+
+export const createParseRecordId = ({
+  rawLineId,
+  parserVersion
+}) => (
+  `pr_${hashStableId(rawLineId, parserVersion)}`
+);
+
+export const createParseRecord = ({
+  rawLineId,
+  parseStatus,
+  parserVersion,
+  rootAnchorId,
+  fieldAnchorMap,
+  formatClass,
+  rawText,
+  queryTerms,
+  fields,
+  normalizedTimestampUtc = null
+}) => ({
+  parseRecordId: createParseRecordId({
+    rawLineId,
+    parserVersion
+  }),
+  rawLineId,
+  parseStatus,
+  parserVersion,
+  rootAnchorId,
+  fieldAnchorMap,
+  formatClass,
+  rawText,
+  queryTerms,
+  fields,
+  normalizedTimestampUtc
+});
+
+export const createTimestampNormalizationRecord = ({
+  rawLineId,
+  sourceValue,
+  normalizedValueUtc,
+  timezoneSource,
+  supportingAnchorId
+}) => ({
+  normalizationRecordId: `tnr_${hashStableId(rawLineId, sourceValue, normalizedValueUtc, supportingAnchorId)}`,
+  rawLineId,
+  sourceValue,
+  normalizedValueUtc,
+  timezoneSource,
+  supportingAnchorId
+});
+
+export const createLookupIndexRecord = ({
+  lookupKind,
+  lookupValue,
+  rawLineId,
+  anchorId,
+  appendSeq
+}) => ({
+  lookupIndexId: `lki_${hashStableId(lookupKind, lookupValue, rawLineId, anchorId, appendSeq)}`,
+  lookupKind,
+  lookupValue,
+  rawLineId,
+  anchorId,
+  appendSeq
+});
+
 const createLineRecord = ({
   rawText,
   lineNumber,

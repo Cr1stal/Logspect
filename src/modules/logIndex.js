@@ -14,6 +14,7 @@ import {
   createSourceFileId
 } from './evidenceModel.js';
 import { streamFileLineRecords } from './fileLineStream.js';
+import { buildParseArtifacts } from './parserNormalizer.js';
 import {
   createParsingContext,
   mergeLogMetadata,
@@ -218,6 +219,53 @@ const ensureEvidenceSchema = (db) => {
       ON anchors(raw_line_id);
     CREATE INDEX IF NOT EXISTS idx_anchors_source_line
       ON anchors(source_file_id, line_number);
+
+    CREATE TABLE IF NOT EXISTS parse_records (
+      parse_record_id TEXT PRIMARY KEY,
+      raw_line_id TEXT NOT NULL,
+      parse_status TEXT NOT NULL,
+      parser_version TEXT NOT NULL,
+      root_anchor_id TEXT NOT NULL,
+      field_anchor_map_json TEXT NOT NULL,
+      format_class TEXT NOT NULL,
+      raw_text TEXT NOT NULL,
+      query_terms_json TEXT NOT NULL,
+      fields_json TEXT NOT NULL,
+      normalized_timestamp_utc TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_parse_records_raw_line
+      ON parse_records(raw_line_id);
+    CREATE INDEX IF NOT EXISTS idx_parse_records_status
+      ON parse_records(parse_status);
+
+    CREATE TABLE IF NOT EXISTS timestamp_normalization_records (
+      normalization_record_id TEXT PRIMARY KEY,
+      raw_line_id TEXT NOT NULL,
+      source_value TEXT NOT NULL,
+      normalized_value_utc TEXT NOT NULL,
+      timezone_source TEXT NOT NULL,
+      supporting_anchor_id TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_timestamp_normalization_raw_line
+      ON timestamp_normalization_records(raw_line_id);
+    CREATE INDEX IF NOT EXISTS idx_timestamp_normalization_value
+      ON timestamp_normalization_records(normalized_value_utc);
+
+    CREATE TABLE IF NOT EXISTS lookup_index (
+      lookup_index_id TEXT PRIMARY KEY,
+      lookup_kind TEXT NOT NULL,
+      lookup_value TEXT NOT NULL,
+      raw_line_id TEXT NOT NULL,
+      anchor_id TEXT NOT NULL,
+      append_seq INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_lookup_index_kind_value_append
+      ON lookup_index(lookup_kind, lookup_value, append_seq);
+    CREATE INDEX IF NOT EXISTS idx_lookup_index_anchor
+      ON lookup_index(anchor_id);
   `);
 
   if (!hasColumn(db, 'log_lines', 'source_file_id')) {
@@ -242,7 +290,14 @@ const ensureEvidenceSchema = (db) => {
 };
 
 const hasEvidenceCoverage = (db) => {
-  if (!hasTable(db, 'raw_log_lines') || !hasTable(db, 'anchors') || !hasTable(db, 'source_files')) {
+  if (
+    !hasTable(db, 'raw_log_lines')
+    || !hasTable(db, 'anchors')
+    || !hasTable(db, 'source_files')
+    || !hasTable(db, 'parse_records')
+    || !hasTable(db, 'timestamp_normalization_records')
+    || !hasTable(db, 'lookup_index')
+  ) {
     return false;
   }
 
@@ -254,15 +309,32 @@ const hasEvidenceCoverage = (db) => {
     return true;
   }
 
+  const evidenceCoverage = db.prepare(`
+    SELECT
+      EXISTS(
+        SELECT 1
+        FROM log_lines
+        WHERE raw_line_id IS NOT NULL
+          AND root_anchor_id IS NOT NULL
+          AND source_file_id IS NOT NULL
+        LIMIT 1
+      ) AS has_line_evidence,
+      EXISTS(
+        SELECT 1
+        FROM parse_records
+        LIMIT 1
+      ) AS has_parse_records,
+      EXISTS(
+        SELECT 1
+        FROM lookup_index
+        LIMIT 1
+      ) AS has_lookup_index
+  `).get();
+
   return Boolean(
-    db.prepare(`
-      SELECT 1
-      FROM log_lines
-      WHERE raw_line_id IS NOT NULL
-        AND root_anchor_id IS NOT NULL
-        AND source_file_id IS NOT NULL
-      LIMIT 1
-    `).get()
+    evidenceCoverage?.has_line_evidence
+    && evidenceCoverage?.has_parse_records
+    && evidenceCoverage?.has_lookup_index
   );
 };
 
@@ -568,6 +640,17 @@ const createIndexRecord = (lineRecord, sourceFileId, appendSeq, context) => {
     byteStart: lineRecord.byteStart,
     byteEnd: lineRecord.byteEnd
   });
+  const parseArtifacts = buildParseArtifacts({
+    rawLogLine,
+    rootAnchor,
+    runtimeRecord: {
+      requestId: /^[a-f0-9-]{36}$/i.test(parsed.uuid || '') ? parsed.uuid : null,
+      jobId: parsed.logInfo?.metadata?.jid || null,
+      logger: parsed.logInfo?.metadata?.logger || null,
+      sourceTag: parsed.logInfo?.metadata?.sourceTag || parsed.logInfo?.type || null,
+      type: parsed.logInfo?.type || null
+    }
+  });
 
   return {
     lineNumber: lineRecord.lineNumber,
@@ -585,7 +668,11 @@ const createIndexRecord = (lineRecord, sourceFileId, appendSeq, context) => {
     byteStart: lineRecord.byteStart,
     byteEnd: lineRecord.byteEnd,
     rawLogLine,
-    rootAnchor
+    rootAnchor,
+    parseRecord: parseArtifacts.parseRecord,
+    fieldAnchors: parseArtifacts.fieldAnchors,
+    timestampNormalizationRecord: parseArtifacts.timestampNormalizationRecord,
+    lookupRecords: parseArtifacts.lookupRecords
   };
 };
 
@@ -694,6 +781,9 @@ const flushBatch = (
   insertSourceFileStatement,
   insertRawLineStatement,
   insertAnchorStatement,
+  insertParseRecordStatement,
+  insertTimestampNormalizationStatement,
+  insertLookupIndexStatement,
   insertLineStatement,
   insertFtsStatement,
   upsertGroupStatement
@@ -736,6 +826,55 @@ const flushBatch = (
         record.rootAnchor.fieldPath,
         record.rootAnchor.anchorKind
       );
+
+      record.fieldAnchors.forEach((fieldAnchor) => {
+        insertAnchorStatement.run(
+          fieldAnchor.anchorId,
+          fieldAnchor.rawLineId,
+          fieldAnchor.sourceFileId,
+          fieldAnchor.lineNumber,
+          fieldAnchor.byteStart,
+          fieldAnchor.byteEnd,
+          fieldAnchor.fieldPath,
+          fieldAnchor.anchorKind
+        );
+      });
+
+      insertParseRecordStatement.run(
+        record.parseRecord.parseRecordId,
+        record.parseRecord.rawLineId,
+        record.parseRecord.parseStatus,
+        record.parseRecord.parserVersion,
+        record.parseRecord.rootAnchorId,
+        JSON.stringify(record.parseRecord.fieldAnchorMap || {}),
+        record.parseRecord.formatClass,
+        record.parseRecord.rawText,
+        JSON.stringify(record.parseRecord.queryTerms || []),
+        JSON.stringify(record.parseRecord.fields || {}),
+        record.parseRecord.normalizedTimestampUtc
+      );
+
+      if (record.timestampNormalizationRecord) {
+        insertTimestampNormalizationStatement.run(
+          record.timestampNormalizationRecord.normalizationRecordId,
+          record.timestampNormalizationRecord.rawLineId,
+          record.timestampNormalizationRecord.sourceValue,
+          record.timestampNormalizationRecord.normalizedValueUtc,
+          record.timestampNormalizationRecord.timezoneSource,
+          record.timestampNormalizationRecord.supportingAnchorId
+        );
+      }
+
+      record.lookupRecords.forEach((lookupRecord) => {
+        insertLookupIndexStatement.run(
+          lookupRecord.lookupIndexId,
+          lookupRecord.lookupKind,
+          lookupRecord.lookupValue,
+          lookupRecord.rawLineId,
+          lookupRecord.anchorId,
+          lookupRecord.appendSeq
+        );
+      });
 
       const result = insertLineStatement.run(
         record.lineNumber,
@@ -1001,6 +1140,44 @@ export const runLogIndexTask = async (
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(anchor_id) DO NOTHING
   `);
+  const insertParseRecordStatement = db.prepare(`
+    INSERT INTO parse_records (
+      parse_record_id,
+      raw_line_id,
+      parse_status,
+      parser_version,
+      root_anchor_id,
+      field_anchor_map_json,
+      format_class,
+      raw_text,
+      query_terms_json,
+      fields_json,
+      normalized_timestamp_utc
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(parse_record_id) DO NOTHING
+  `);
+  const insertTimestampNormalizationStatement = db.prepare(`
+    INSERT INTO timestamp_normalization_records (
+      normalization_record_id,
+      raw_line_id,
+      source_value,
+      normalized_value_utc,
+      timezone_source,
+      supporting_anchor_id
+    ) VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(normalization_record_id) DO NOTHING
+  `);
+  const insertLookupIndexStatement = db.prepare(`
+    INSERT INTO lookup_index (
+      lookup_index_id,
+      lookup_kind,
+      lookup_value,
+      raw_line_id,
+      anchor_id,
+      append_seq
+    ) VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(lookup_index_id) DO NOTHING
+  `);
 
   const insertLineStatement = db.prepare(`
     INSERT INTO log_lines (
@@ -1134,6 +1311,9 @@ export const runLogIndexTask = async (
             insertSourceFileStatement,
             insertRawLineStatement,
             insertAnchorStatement,
+            insertParseRecordStatement,
+            insertTimestampNormalizationStatement,
+            insertLookupIndexStatement,
             insertLineStatement,
             insertFtsStatement,
             upsertGroupStatement
@@ -1164,6 +1344,9 @@ export const runLogIndexTask = async (
         insertSourceFileStatement,
         insertRawLineStatement,
         insertAnchorStatement,
+        insertParseRecordStatement,
+        insertTimestampNormalizationStatement,
+        insertLookupIndexStatement,
         insertLineStatement,
         insertFtsStatement,
         upsertGroupStatement
@@ -2035,6 +2218,32 @@ export const openIndexedAnchor = async (logFilePath, anchorId) => {
       WHERE anchor_id = ?
       LIMIT 1
     `).get(anchorId) || null;
+  } finally {
+    db.close();
+  }
+};
+
+export const lookupIndexedValue = async (logFilePath, lookupKind, lookupValue) => {
+  const dbPath = await getIndexDatabasePath(logFilePath);
+  const database = await openDatabase(dbPath);
+  if (!database) {
+    return [];
+  }
+
+  const { db } = database;
+  try {
+    return db.prepare(`
+      SELECT
+        lookup_kind AS lookupKind,
+        lookup_value AS lookupValue,
+        raw_line_id AS rawLineId,
+        anchor_id AS anchorId,
+        append_seq AS appendSeq
+      FROM lookup_index
+      WHERE lookup_kind = ?
+        AND lookup_value = ?
+      ORDER BY append_seq ASC
+    `).all(lookupKind, String(lookupValue));
   } finally {
     db.close();
   }

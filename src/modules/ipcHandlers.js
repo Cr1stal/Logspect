@@ -10,6 +10,7 @@ import {
   getIndexedLogViewPage,
   getIndexedLogViewState,
   getLogIndexStatus,
+  lookupIndexedValue,
   openIndexedAnchor,
   setLogIndexStatusCallback,
   startLogIndexing
@@ -483,6 +484,20 @@ export const setupIpcHandlers = () => {
     } catch (error) {
       console.error('Error opening log anchor evidence:', error);
       return null;
+    }
+  });
+
+  ipcMain.handle('lookup-log-evidence', async (event, lookupKind, lookupValue) => {
+    try {
+      const watchingStatus = getWatchingStatus();
+      if (!projectDirectory || !watchingStatus.logFilePath) {
+        return [];
+      }
+
+      return await lookupIndexedValue(watchingStatus.logFilePath, lookupKind, lookupValue);
+    } catch (error) {
+      console.error('Error looking up indexed evidence:', error);
+      return [];
     }
   });
 

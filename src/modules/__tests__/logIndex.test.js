@@ -65,6 +65,7 @@ describe('logIndex', () => {
     const {
       getIndexedLogViewPage,
       getIndexedRawLine,
+      lookupIndexedValue,
       openIndexedAnchor,
       setLogIndexStorageDirectory
     } = await import('../logIndex.js');
@@ -116,6 +117,11 @@ describe('logIndex', () => {
       rawLineId: firstRawLineId,
       lineNumber: 1
     });
+    expect(await lookupIndexedValue(
+      logFilePath,
+      'request_id',
+      'aa32797f-b087-4d45-9d99-28198952a784'
+    )).toHaveLength(2);
   });
 
   it('builds a SQLite index and searches it by content', async () => {
@@ -127,7 +133,11 @@ describe('logIndex', () => {
 
     await waitForIndexReady(logFilePath, directoryPath);
 
-    const { searchIndexedLogFile, setLogIndexStorageDirectory } = await import('../logIndex.js');
+    const {
+      lookupIndexedValue,
+      searchIndexedLogFile,
+      setLogIndexStorageDirectory
+    } = await import('../logIndex.js');
     setLogIndexStorageDirectory(directoryPath);
 
     const result = await searchIndexedLogFile(logFilePath, 'cache timeout');
@@ -153,6 +163,16 @@ describe('logIndex', () => {
       anchorId: expect.stringMatching(/^anc_/),
       lineNumber: 2
     });
+    expect(await lookupIndexedValue(
+      logFilePath,
+      'job_id',
+      '73f8e97e7e79413a3006f4ea'
+    )).toMatchObject([
+      expect.objectContaining({
+        lookupKind: 'job_id',
+        lookupValue: '73f8e97e7e79413a3006f4ea'
+      })
+    ]);
   });
 
   it('appends new lines into the existing index on subsequent runs', async () => {
