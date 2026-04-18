@@ -11,9 +11,10 @@ export const logEntriesByUuid = new Map();
  * @param {string} uuid - The unique identifier
  * @param {string} content - The log content
  * @param {object} logInfo - Extracted log information {type, subType, success, metadata, title}
+ * @param {object|null} evidence - Evidence ref {sourceFileId, rawLineId, anchorId, lineNumber, byteStart, byteEnd}
  * @returns {{isNewEntry: boolean, totalEntries: number}}
  */
-export const addLogEntry = (uuid, content, logInfo) => {
+export const addLogEntry = (uuid, content, logInfo, evidence = null) => {
   let isNewEntry = false;
 
   if (!logEntriesByUuid.has(uuid)) {
@@ -35,7 +36,8 @@ export const addLogEntry = (uuid, content, logInfo) => {
   const logGroup = logEntriesByUuid.get(uuid);
   logGroup.entries.push({
     content: content,
-    timestamp: new Date()
+    timestamp: new Date(),
+    ...(evidence ? { evidence } : {})
   });
   logGroup.lastSeen = new Date();
 
@@ -75,7 +77,8 @@ export const getFormattedLogData = () => {
       lastSeen: group.lastSeen.toISOString(),
       entries: group.entries.map(entry => ({
         content: entry.content,
-        timestamp: entry.timestamp.toISOString()
+        timestamp: entry.timestamp.toISOString(),
+        ...(entry.evidence ? { evidence: entry.evidence } : {})
       }))
     });
   }
@@ -158,7 +161,8 @@ export const getEntryByUuid = (uuid) => {
     lastSeen: group.lastSeen.toISOString(),
     entries: group.entries.map(entry => ({
       content: entry.content,
-      timestamp: entry.timestamp.toISOString()
+      timestamp: entry.timestamp.toISOString(),
+      ...(entry.evidence ? { evidence: entry.evidence } : {})
     }))
   };
 };

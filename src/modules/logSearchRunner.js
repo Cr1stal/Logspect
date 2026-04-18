@@ -1,7 +1,11 @@
 import fs from 'fs';
-import readline from 'node:readline';
 import util from 'node:util';
 import log from 'electron-log';
+import { streamFileLineRecords } from './fileLineStream.js';
+import {
+  appendLiveRawLine,
+  registerLiveSourceFile
+} from './liveEvidenceStore.js';
 import {
   createParsingContext,
   mergeLogMetadata,
@@ -35,10 +39,10 @@ const normalizeQueryTokens = (query) => (
     .filter(Boolean)
 );
 
-const createSearchRecord = (rawLine, lineNumber, context) => {
-  const parsed = parseLogLine(rawLine, {
+const createSearchRecord = (lineRecord, context) => {
+  const parsed = parseLogLine(lineRecord.rawText, {
     context,
-    lineNumber,
+    lineNumber: lineRecord.lineNumber,
     fallbackGrouping: 'line-number'
   });
 
@@ -49,7 +53,11 @@ const createSearchRecord = (rawLine, lineNumber, context) => {
   return {
     groupId: parsed.uuid,
     content: util.stripVTControlCharacters(parsed.content).trim(),
-    logInfo: parsed.logInfo
+    logInfo: parsed.logInfo,
+    lineNumber: lineRecord.lineNumber,
+    byteStart: lineRecord.byteStart,
+    byteEnd: lineRecord.byteEnd,
+    rawText: lineRecord.rawText
   };
 };
 
@@ -96,7 +104,7 @@ const createStoredGroup = (record, lineNumber) => {
   };
 };
 
-const appendRecordToGroup = (group, record, lineNumber) => {
+const appendRecordToGroup = (group, record, lineNumber, evidence = null) => {
   group.entriesCount += 1;
   group.lastSeen = DISK_SEARCH_TIMESTAMP;
 
@@ -114,7 +122,8 @@ const appendRecordToGroup = (group, record, lineNumber) => {
     content: record.content,
     timestamp: group.lastSeen,
     lineNumber,
-    isMatch: group.searchMeta.matchedLineNumbers.includes(lineNumber)
+    isMatch: group.searchMeta.matchedLineNumbers.includes(lineNumber),
+    ...(evidence ? { evidence } : {})
   });
 };
 
@@ -178,6 +187,9 @@ const runStreamScan = async (
   const matchedGroups = new Map();
   const resultsByGroup = new Map();
   const discoveryParsingContext = createParsingContext();
+  const scanSourceFile = registerLiveSourceFile({
+    path: logFilePath
+  });
   const summaryState = {
     matchedLines: 0,
     shownGroups: 0,
@@ -255,44 +267,28 @@ const runStreamScan = async (
     );
   };
 
-  const stream = fs.createReadStream(logFilePath, {
-    encoding: 'utf8',
-    highWaterMark: SEARCH_STREAM_HIGH_WATER_MARK
-  });
-
-  stream.on('data', (chunk) => {
-    discoveryBytesProcessed += Buffer.byteLength(chunk, 'utf8');
-    updateProgress('discovery');
-    emitStatusUpdate('running');
-  });
-
-  const lineReader = readline.createInterface({
-    input: stream,
-    crlfDelay: Infinity
-  });
-
   try {
     emitStatusUpdate('running', true);
 
-    let lineNumber = 0;
-
-    for await (const rawLine of lineReader) {
+    for await (const lineRecord of streamFileLineRecords(logFilePath, {
+      encoding: 'utf8',
+      highWaterMark: SEARCH_STREAM_HIGH_WATER_MARK
+    })) {
       if (isCancelled()) {
-        lineReader.close();
-        stream.destroy();
         break;
       }
 
-      lineNumber += 1;
-      summaryState.scannedLines = lineNumber;
+      discoveryBytesProcessed = lineRecord.byteEnd;
+      updateProgress('discovery');
+      summaryState.scannedLines = lineRecord.lineNumber;
 
-      const record = createSearchRecord(rawLine, lineNumber, discoveryParsingContext);
+      const record = createSearchRecord(lineRecord, discoveryParsingContext);
       if (!record) {
         continue;
       }
 
       if (!matchesQuery(buildSearchableText(record), queryTokens)) {
-        if (lineNumber % SEARCH_YIELD_EVERY_N_LINES === 0) {
+        if (lineRecord.lineNumber % SEARCH_YIELD_EVERY_N_LINES === 0) {
           emitStatusUpdate('running');
           emitResultsUpdate();
           await yieldToEventLoop();
@@ -304,17 +300,17 @@ const runStreamScan = async (
       const group = matchedGroups.get(record.groupId);
       if (!group && matchedGroups.size >= maxGroups) {
         summaryState.truncated = true;
-        if (lineNumber % SEARCH_YIELD_EVERY_N_LINES === 0) {
+        if (lineRecord.lineNumber % SEARCH_YIELD_EVERY_N_LINES === 0) {
           emitStatusUpdate('running');
           await yieldToEventLoop();
         }
         continue;
       }
 
-      trackMatchedGroup(matchedGroups, record, lineNumber);
+      trackMatchedGroup(matchedGroups, record, lineRecord.lineNumber);
       summaryState.shownGroups = matchedGroups.size;
 
-      if (lineNumber % SEARCH_YIELD_EVERY_N_LINES === 0) {
+      if (lineRecord.lineNumber % SEARCH_YIELD_EVERY_N_LINES === 0) {
         emitStatusUpdate('running');
         await yieldToEventLoop();
       }
@@ -332,38 +328,22 @@ const runStreamScan = async (
     if (matchedGroups.size > 0) {
       const matchedGroupIds = new Set(matchedGroups.keys());
       const fullGroupParsingContext = createParsingContext();
-      const fullGroupStream = fs.createReadStream(logFilePath, {
-        encoding: 'utf8',
-        highWaterMark: SEARCH_STREAM_HIGH_WATER_MARK
-      });
-
-      fullGroupStream.on('data', (chunk) => {
-        fullGroupBytesProcessed += Buffer.byteLength(chunk, 'utf8');
-        updateProgress('full-groups');
-        emitStatusUpdate('running');
-        emitResultsUpdate();
-      });
-
-      const fullGroupLineReader = readline.createInterface({
-        input: fullGroupStream,
-        crlfDelay: Infinity
-      });
 
       try {
-        let fullGroupLineNumber = 0;
-
-        for await (const rawLine of fullGroupLineReader) {
+        for await (const lineRecord of streamFileLineRecords(logFilePath, {
+          encoding: 'utf8',
+          highWaterMark: SEARCH_STREAM_HIGH_WATER_MARK
+        })) {
           if (isCancelled()) {
-            fullGroupLineReader.close();
-            fullGroupStream.destroy();
             break;
           }
 
-          fullGroupLineNumber += 1;
+          fullGroupBytesProcessed = lineRecord.byteEnd;
+          updateProgress('full-groups');
 
-          const record = createSearchRecord(rawLine, fullGroupLineNumber, fullGroupParsingContext);
+          const record = createSearchRecord(lineRecord, fullGroupParsingContext);
           if (!record || !matchedGroupIds.has(record.groupId)) {
-            if (fullGroupLineNumber % SEARCH_YIELD_EVERY_N_LINES === 0) {
+            if (lineRecord.lineNumber % SEARCH_YIELD_EVERY_N_LINES === 0) {
               emitStatusUpdate('running');
               emitResultsUpdate();
               await yieldToEventLoop();
@@ -379,15 +359,24 @@ const runStreamScan = async (
             group.searchMeta.lastLineNumber = matchedGroup.lastLineNumber;
             group.searchMeta.matchedLineCount = matchedGroup.matchedLineCount;
             group.searchMeta.matchedLineNumbers = [...matchedGroup.matchedLineNumbers];
-            group.searchMeta.groupFirstLineNumber = fullGroupLineNumber;
-            group.searchMeta.groupLastLineNumber = fullGroupLineNumber;
+            group.searchMeta.groupFirstLineNumber = lineRecord.lineNumber;
+            group.searchMeta.groupLastLineNumber = lineRecord.lineNumber;
             resultsByGroup.set(record.groupId, group);
           }
 
-          appendRecordToGroup(group, record, fullGroupLineNumber);
+          const evidence = appendLiveRawLine({
+            sourceFile: scanSourceFile,
+            lineNumber: lineRecord.lineNumber,
+            byteStart: lineRecord.byteStart,
+            byteEnd: lineRecord.byteEnd,
+            rawText: lineRecord.rawText,
+            ingestedAtUtc: new Date().toISOString()
+          }).evidence;
+
+          appendRecordToGroup(group, record, lineRecord.lineNumber, evidence);
           resultsDirty = true;
 
-          if (fullGroupLineNumber % SEARCH_YIELD_EVERY_N_LINES === 0) {
+          if (lineRecord.lineNumber % SEARCH_YIELD_EVERY_N_LINES === 0) {
             emitStatusUpdate('running');
             emitResultsUpdate();
             await yieldToEventLoop();
@@ -397,8 +386,6 @@ const runStreamScan = async (
         fullGroupBytesProcessed = totalBytes;
         updateProgress('full-groups');
       } finally {
-        fullGroupLineReader.close();
-        fullGroupStream.destroy();
       }
     }
 
@@ -416,9 +403,6 @@ const runStreamScan = async (
     log.error('Error searching log file:', error);
     emitStatusUpdate('error', true, error.message);
     emitResultsUpdate(true);
-  } finally {
-    lineReader.close();
-    stream.destroy();
   }
 };
 

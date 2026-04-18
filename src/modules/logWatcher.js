@@ -1,6 +1,12 @@
 import fs from 'fs';
 import log from "electron-log";
 import { createParsingContext, parseLogLines } from './logParser.js';
+import { splitContentIntoLineRecords } from './evidenceModel.js';
+import {
+  appendLiveRawLine,
+  registerLiveSourceFile,
+  resetLiveEvidenceStore
+} from './liveEvidenceStore.js';
 import { addLogEntry } from './logStorage.js';
 
 export const INITIAL_HISTORY_MAX_BYTES = 10 * 1024 * 1024;
@@ -14,6 +20,8 @@ let isReading = false;
 let hasPendingRead = false;
 let dropPartialLeadingLine = false;
 let parsingContext = createParsingContext();
+let nextLineNumber = 1;
+let liveSourceFile = null;
 
 // Callback for when new log data is available
 let onLogDataCallback = null;
@@ -24,15 +32,27 @@ const getInitialReadOffset = (fileSize) => (
 
 const trimPartialLeadingLine = (content) => {
   if (!content) {
-    return '';
+    return {
+      content: '',
+      droppedLeadingBytes: 0
+    };
   }
 
   const firstLineBreakIndex = content.indexOf('\n');
   if (firstLineBreakIndex === -1) {
-    return '';
+    return {
+      content: '',
+      droppedLeadingBytes: Buffer.byteLength(content, 'utf8')
+    };
   }
 
-  return content.slice(firstLineBreakIndex + 1);
+  const trimmedContent = content.slice(firstLineBreakIndex + 1);
+  const droppedLeadingSlice = content.slice(0, firstLineBreakIndex + 1);
+
+  return {
+    content: trimmedContent,
+    droppedLeadingBytes: Buffer.byteLength(droppedLeadingSlice, 'utf8')
+  };
 };
 
 const readFileSlice = (filePath, start, end, shouldDropPartialLeadingLine = false) => (
@@ -51,13 +71,45 @@ const readFileSlice = (filePath, start, end, shouldDropPartialLeadingLine = fals
     });
 
     stream.on('end', () => {
-      resolve(
-        shouldDropPartialLeadingLine
-          ? trimPartialLeadingLine(content)
-          : content
-      );
+      if (shouldDropPartialLeadingLine) {
+        resolve(trimPartialLeadingLine(content));
+        return;
+      }
+
+      resolve({
+        content,
+        droppedLeadingBytes: 0
+      });
     });
 
+    stream.on('error', reject);
+  })
+);
+
+const countLineBreaksBeforeOffset = (filePath, offset) => (
+  new Promise((resolve, reject) => {
+    if (!offset || offset <= 0) {
+      resolve(0);
+      return;
+    }
+
+    const stream = fs.createReadStream(filePath, {
+      start: 0,
+      end: offset - 1,
+      highWaterMark: READ_STREAM_HIGH_WATER_MARK
+    });
+
+    let lineBreakCount = 0;
+
+    stream.on('data', (chunk) => {
+      for (let index = 0; index < chunk.length; index += 1) {
+        if (chunk[index] === 10) {
+          lineBreakCount += 1;
+        }
+      }
+    });
+
+    stream.on('end', () => resolve(lineBreakCount));
     stream.on('error', reject);
   })
 );
@@ -95,6 +147,9 @@ export const startWatching = async (newLogPath, options = {}) => {
     lastSize = 0;
     dropPartialLeadingLine = false;
     parsingContext = createParsingContext();
+    nextLineNumber = 1;
+    liveSourceFile = null;
+    resetLiveEvidenceStore();
 
     let shouldLoadExistingContent = false;
     const hasCustomStartOffset = Number.isInteger(options.startOffset) && options.startOffset >= 0;
@@ -120,9 +175,16 @@ export const startWatching = async (newLogPath, options = {}) => {
       } else if (dropPartialLeadingLine) {
         log.info(`Loading the most recent ${INITIAL_HISTORY_MAX_BYTES} bytes to keep large files responsive`);
       }
+
+      const lineBreakCount = await countLineBreaksBeforeOffset(logFilePath, lastSize);
+      nextLineNumber = lineBreakCount + 1 + (dropPartialLeadingLine ? 1 : 0);
+      liveSourceFile = registerLiveSourceFile({
+        path: logFilePath
+      });
     } catch (err) {
       log.info('Log file not found, will wait for it to be created:', logFilePath);
       lastSize = 0;
+      nextLineNumber = 1;
     }
 
     // Set up file watcher
@@ -175,10 +237,21 @@ export const readLogFile = async () => {
   try {
     const stats = await fs.promises.stat(logFilePath);
     const currentSize = stats.size;
+    if (!liveSourceFile) {
+      liveSourceFile = registerLiveSourceFile({
+        path: logFilePath
+      });
+    }
 
     if (currentSize < lastSize) {
       lastSize = getInitialReadOffset(currentSize);
       dropPartialLeadingLine = lastSize > 0;
+      resetLiveEvidenceStore();
+      liveSourceFile = registerLiveSourceFile({
+        path: logFilePath
+      });
+      const lineBreakCount = await countLineBreaksBeforeOffset(logFilePath, lastSize);
+      nextLineNumber = lineBreakCount + 1 + (dropPartialLeadingLine ? 1 : 0);
       log.info(`Log file was truncated. Resetting read offset to ${lastSize}.`);
     }
 
@@ -189,12 +262,13 @@ export const readLogFile = async () => {
         currentSize - 1,
         dropPartialLeadingLine
       );
+      const contentStartByte = lastSize + newContent.droppedLeadingBytes;
 
       lastSize = currentSize;
       dropPartialLeadingLine = false;
 
-      if (newContent.trim()) {
-        processNewLogContent(newContent);
+      if (newContent.content.trim()) {
+        processNewLogContent(newContent.content, contentStartByte);
       }
     }
   } catch (err) {
@@ -212,21 +286,36 @@ export const readLogFile = async () => {
 /**
  * Processes new log content and updates storage
  * @param {string} content - New log content to process
+ * @param {number} startByte - Starting byte offset of the provided content inside the source file
  */
-const processNewLogContent = (content) => {
-  // Split by lines and process each line
-  const lines = content.split(/\r?\n/).filter(line => line.trim());
-  const parsedEntries = parseLogLines(lines, {
+const processNewLogContent = (content, startByte) => {
+  const lineRecords = splitContentIntoLineRecords(content, {
+    startByte,
+    startLineNumber: nextLineNumber
+  }).filter(record => record.rawText.trim());
+  const parsedEntries = parseLogLines(lineRecords.map(record => record.rawText), {
     context: parsingContext
   });
   let matchedEntries = 0;
   let newGroups = 0;
   let unmatchedEntries = 0;
 
-  parsedEntries.forEach(parsed => {
+  parsedEntries.forEach((parsed, index) => {
+    const lineRecord = lineRecords[index];
+    const evidence = lineRecord && liveSourceFile
+      ? appendLiveRawLine({
+          sourceFile: liveSourceFile,
+          lineNumber: lineRecord.lineNumber,
+          byteStart: lineRecord.byteStart,
+          byteEnd: lineRecord.byteEnd,
+          rawText: lineRecord.rawText,
+          ingestedAtUtc: new Date().toISOString()
+        }).evidence
+      : null;
+
     if (parsed.uuid && parsed.logInfo) {
       matchedEntries += 1;
-      const result = addLogEntry(parsed.uuid, parsed.content, parsed.logInfo);
+      const result = addLogEntry(parsed.uuid, parsed.content, parsed.logInfo, evidence);
 
       if (result.isNewEntry) {
         newGroups += 1;
@@ -237,8 +326,12 @@ const processNewLogContent = (content) => {
   });
 
   log.info(
-    `Processed ${lines.length} log lines (${matchedEntries} matched, ${newGroups} new groups, ${unmatchedEntries} unmatched)`
+    `Processed ${lineRecords.length} log lines (${matchedEntries} matched, ${newGroups} new groups, ${unmatchedEntries} unmatched)`
   );
+
+  if (lineRecords.length > 0) {
+    nextLineNumber = lineRecords[lineRecords.length - 1].lineNumber + 1;
+  }
 
   // Notify callback if set
   if (onLogDataCallback) {

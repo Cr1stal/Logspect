@@ -192,6 +192,29 @@ describe('logSearch', () => {
       requestPhase: 'finish'
     });
     expect(finalResults.entries[0].entries.map(entry => entry.lineNumber)).toEqual([1, 2, 3, 4]);
+    expect(finalResults.entries[0].entries[2].evidence).toMatchObject({
+      sourceFileId: expect.stringMatching(/^src_/),
+      rawLineId: expect.stringMatching(/^raw_/),
+      anchorId: expect.stringMatching(/^anc_/),
+      lineNumber: 3
+    });
+
+    const {
+      getLiveRawLine,
+      openLiveAnchor
+    } = await import('../liveEvidenceStore.js');
+    const thirdEntryEvidence = finalResults.entries[0].entries[2].evidence;
+
+    expect(getLiveRawLine(thirdEntryEvidence.rawLineId)).toMatchObject({
+      rawLineId: thirdEntryEvidence.rawLineId,
+      lineNumber: 3,
+      rawText: 'Parameters: {"page"=>"1"}'
+    });
+    expect(openLiveAnchor(thirdEntryEvidence.anchorId)).toMatchObject({
+      anchorId: thirdEntryEvidence.anchorId,
+      rawLineId: thirdEntryEvidence.rawLineId,
+      lineNumber: 3
+    });
   });
 
   it('falls back to a stream scan when indexed search throws unexpectedly', async () => {

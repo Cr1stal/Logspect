@@ -77,6 +77,30 @@ describe('logWatcher', () => {
     expect(data.totalEntries).toBe(2);
     expect(data.entries.map(entry => entry.uuid)).toContain('aa32797f-b087-4d45-9d99-28198952a784');
     expect(data.entries.map(entry => entry.uuid)).toContain('73f8e97e7e79413a3006f4ea');
+    const requestEntry = data.entries.find(entry => entry.uuid === 'aa32797f-b087-4d45-9d99-28198952a784');
+    expect(requestEntry.entries[0].evidence).toMatchObject({
+      sourceFileId: expect.stringMatching(/^src_/),
+      rawLineId: expect.stringMatching(/^raw_/),
+      anchorId: expect.stringMatching(/^anc_/),
+      lineNumber: expect.any(Number),
+      byteStart: expect.any(Number),
+      byteEnd: expect.any(Number)
+    });
+
+    const { getLiveRawLine, openLiveAnchor } = await import('../liveEvidenceStore.js');
+    const firstEvidence = requestEntry.entries[0].evidence;
+    expect(getLiveRawLine(firstEvidence.rawLineId)).toMatchObject({
+      rawLineId: firstEvidence.rawLineId,
+      sourceFileId: firstEvidence.sourceFileId,
+      lineNumber: firstEvidence.lineNumber
+    });
+    expect(openLiveAnchor(firstEvidence.anchorId)).toMatchObject({
+      rawLineId: firstEvidence.rawLineId,
+      sourceFileId: firstEvidence.sourceFileId,
+      lineNumber: firstEvidence.lineNumber,
+      byteStart: firstEvidence.byteStart,
+      byteEnd: firstEvidence.byteEnd
+    });
   });
 
   it('loads only the recent tail of very large files and skips partial leading lines', async () => {
@@ -96,6 +120,7 @@ describe('logWatcher', () => {
     expect(data.totalEntries).toBe(1);
     expect(data.entries[0].uuid).toBe('bb32797f-b087-4d45-9d99-28198952a784');
     expect(data.entries[0].entries[0].content).toBe('Completed 200 OK in 9ms');
+    expect(data.entries[0].entries[0].evidence.lineNumber).toBeGreaterThan(1);
   });
 
   it('can start from an indexed offset without reloading old history', async () => {
@@ -137,5 +162,8 @@ describe('logWatcher', () => {
 
     expect(data.totalEntries).toBe(1);
     expect(data.entries[0].uuid).toBe('bb32797f-b087-4d45-9d99-28198952a784');
+    expect(data.entries[0].entries[0].evidence).toMatchObject({
+      lineNumber: 3
+    });
   });
 });

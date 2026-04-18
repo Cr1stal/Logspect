@@ -6,12 +6,18 @@ import { startWatching, getWatchingStatus } from './logWatcher.js';
 import { getFormattedLogData, clearAllLogData } from './logStorage.js';
 import {
   cancelLogIndexing,
+  getIndexedRawLine,
   getIndexedLogViewPage,
   getIndexedLogViewState,
   getLogIndexStatus,
+  openIndexedAnchor,
   setLogIndexStatusCallback,
   startLogIndexing
 } from './logIndex.js';
+import {
+  getLiveRawLine,
+  openLiveAnchor
+} from './liveEvidenceStore.js';
 import {
   cancelActiveLogSearch,
   searchLogFile,
@@ -431,6 +437,52 @@ export const setupIpcHandlers = () => {
         success: false,
         message: `Error: ${error.message}`
       };
+    }
+  });
+
+  ipcMain.handle('get-log-raw-line', async (event, rawLineId) => {
+    try {
+      if (!rawLineId) {
+        return null;
+      }
+
+      const liveRawLine = getLiveRawLine(rawLineId);
+      if (liveRawLine) {
+        return liveRawLine;
+      }
+
+      const watchingStatus = getWatchingStatus();
+      if (!projectDirectory || !watchingStatus.logFilePath) {
+        return null;
+      }
+
+      return await getIndexedRawLine(watchingStatus.logFilePath, rawLineId);
+    } catch (error) {
+      console.error('Error opening raw log line evidence:', error);
+      return null;
+    }
+  });
+
+  ipcMain.handle('open-log-anchor', async (event, anchorId) => {
+    try {
+      if (!anchorId) {
+        return null;
+      }
+
+      const liveAnchor = openLiveAnchor(anchorId);
+      if (liveAnchor) {
+        return liveAnchor;
+      }
+
+      const watchingStatus = getWatchingStatus();
+      if (!projectDirectory || !watchingStatus.logFilePath) {
+        return null;
+      }
+
+      return await openIndexedAnchor(watchingStatus.logFilePath, anchorId);
+    } catch (error) {
+      console.error('Error opening log anchor evidence:', error);
+      return null;
     }
   });
 
