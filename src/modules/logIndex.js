@@ -127,6 +127,27 @@ const buildWorkerExecArgv = () => (
   process.execArgv.filter(arg => !arg.startsWith('--input-type'))
 );
 
+const loadPackagedSqlite = () => {
+  if (!process.resourcesPath) {
+    return null;
+  }
+
+  const packagedModuleEntry = path.join(
+    process.resourcesPath,
+    'node_modules',
+    'better-sqlite3',
+    'package.json'
+  );
+
+  if (!fs.existsSync(packagedModuleEntry)) {
+    return null;
+  }
+
+  const packagedRequire = createRequire(packagedModuleEntry);
+  const loadedModule = packagedRequire('./lib/index.js');
+  return loadedModule.default || loadedModule;
+};
+
 const loadSqlite = () => {
   if (sqliteSupported === false) {
     return null;
@@ -142,6 +163,18 @@ const loadSqlite = () => {
     sqliteSupported = true;
     return BetterSqlite3;
   } catch (error) {
+    try {
+      const loadedModule = loadPackagedSqlite();
+
+      if (loadedModule) {
+        BetterSqlite3 = loadedModule;
+        sqliteSupported = true;
+        return BetterSqlite3;
+      }
+    } catch (packagedError) {
+      log.warn?.('Packaged better-sqlite3 fallback failed:', packagedError);
+    }
+
     sqliteSupported = false;
     log.warn?.('better-sqlite3 is not available in this runtime:', error);
     return null;
